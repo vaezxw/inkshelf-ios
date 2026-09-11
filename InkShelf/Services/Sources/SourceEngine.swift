@@ -338,8 +338,6 @@ enum SourceEngine {
                 if text.count >= 80 { return text }
             }
         }
-        // Strip obvious chrome then take body text
-        _ = try? doc.select("script, style, nav, header, footer, iframe").remove()
         let text = ((try? doc.body()?.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return text.count >= 80 ? text : ""
     }
