@@ -249,6 +249,7 @@ final class SyncService: ObservableObject {
                 }
                 book.chapterCount = max(book.chapterCount, remoteChapters.count)
             }
+        }
 
         let booksById = Dictionary(uniqueKeysWithValues: try context.fetch(FetchDescriptor<BookEntity>()).map { ($0.id, $0) })
         let existingMarks = Dictionary(
