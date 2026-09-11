@@ -54,7 +54,7 @@ struct ReaderView: View {
                 VStack {
                     Spacer()
                     GlassToast(message: toast)
-                        .padding(.bottom, showChrome ? 120 : 36)
+                        .padding(.bottom, showChrome ? 72 : 36)
                 }
             }
         }
@@ -87,7 +87,18 @@ struct ReaderView: View {
         }
         .onChange(of: prefs.followSystemBrightness) { _, _ in applyBrightness() }
         .onChange(of: prefs.brightness) { _, _ in applyBrightness() }
-        .sheet(isPresented: $showTOC) { tocSheet }
+        .sheet(isPresented: $showTOC) {
+            ReaderTOCSheet(
+                chapters: chapters,
+                bookmarks: book?.bookmarks ?? [],
+                currentChapterIndex: chapterIndex,
+                onSelectChapter: { index in
+                    showTOC = false
+                    goChapter(index)
+                },
+                onClose: { showTOC = false }
+            )
+        }
         .sheet(isPresented: $showPrefs) { ReaderPrefsSheet() }
     }
 
@@ -182,6 +193,39 @@ struct ReaderView: View {
             Text(pageLabel)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(palette.muted)
+
+            Menu {
+                Button {
+                    toggleBookmark()
+                } label: {
+                    Label(
+                        isBookmarked ? "取消书签" : "书签",
+                        systemImage: isBookmarked ? "bookmark.fill" : "bookmark"
+                    )
+                }
+                Button {
+                    if speech.isSpeaking {
+                        speech.stop()
+                    } else {
+                        prefs.autoReadEnabled = false
+                        speech.speak(chapterText)
+                    }
+                } label: {
+                    Label(
+                        speech.isSpeaking ? "停止听书" : "听书",
+                        systemImage: speech.isSpeaking ? "stop.fill" : "speaker.wave.2.fill"
+                    )
+                }
+                Button {
+                    showPrefs = true
+                } label: {
+                    Label("排版", systemImage: "textformat.size")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 36, height: 36)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -190,27 +234,13 @@ struct ReaderView: View {
     }
 
     private var bottomChrome: some View {
-        VStack(spacing: 8) {
-            HStack {
-                chromeButton("chevron.left.2", "上一章", disabled: chapterIndex <= 0) {
-                    goChapter(chapterIndex - 1)
-                }
-                chromeButton("list.bullet", "目录") { showTOC = true }
-                chromeButton("chevron.right.2", "下一章", disabled: chapterIndex >= chapters.count - 1) {
-                    goChapter(chapterIndex + 1)
-                }
+        HStack {
+            chromeButton("chevron.left.2", "上一章", disabled: chapterIndex <= 0) {
+                goChapter(chapterIndex - 1)
             }
-            HStack {
-                chromeButton(isBookmarked ? "bookmark.fill" : "bookmark", "书签") { toggleBookmark() }
-                chromeButton(speech.isSpeaking ? "stop.fill" : "speaker.wave.2.fill", "听书") {
-                    if speech.isSpeaking {
-                        speech.stop()
-                    } else {
-                        prefs.autoReadEnabled = false
-                        speech.speak(chapterText)
-                    }
-                }
-                chromeButton("textformat.size", "排版") { showPrefs = true }
+            chromeButton("list.bullet", "目录") { showTOC = true }
+            chromeButton("chevron.right.2", "下一章", disabled: chapterIndex >= chapters.count - 1) {
+                goChapter(chapterIndex + 1)
             }
         }
         .padding(.horizontal, 8)
@@ -255,50 +285,6 @@ struct ReaderView: View {
             return (InkShelfColors.paper, InkShelfColors.ink, InkShelfColors.inkMuted)
         case .system:
             return (Color(.systemBackground), Color(.label), Color(.secondaryLabel))
-        }
-    }
-
-    private var tocSheet: some View {
-        NavigationStack {
-            List {
-                Section("目录") {
-                    ForEach(chapters, id: \.id) { ch in
-                        Button {
-                            showTOC = false
-                            goChapter(ch.index)
-                        } label: {
-                            HStack {
-                                Text(ch.title).foregroundStyle(palette.fg)
-                                Spacer()
-                                if ch.index == chapterIndex {
-                                    Image(systemName: "checkmark").foregroundStyle(InkShelfColors.lamp)
-                                }
-                            }
-                        }
-                    }
-                }
-                if let book, !book.bookmarks.isEmpty {
-                    Section("书签") {
-                        ForEach(book.bookmarks.sorted(by: { $0.createdAt > $1.createdAt }), id: \.id) { bm in
-                            Button {
-                                showTOC = false
-                                goChapter(bm.chapterIndex)
-                            } label: {
-                                VStack(alignment: .leading) {
-                                    Text(bm.title)
-                                    Text("第 \(bm.chapterIndex + 1) 章").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("目录与书签")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { showTOC = false }
-                }
-            }
         }
     }
 
@@ -476,6 +462,92 @@ struct ReaderView: View {
         Task {
             try? await Task.sleep(nanoseconds: 1_600_000_000)
             if toast == message { toast = nil }
+        }
+    }
+}
+
+struct ReaderTOCSheet: View {
+    let chapters: [ChapterEntity]
+    let bookmarks: [BookmarkEntity]
+    let currentChapterIndex: Int
+    var onSelectChapter: (Int) -> Void
+    var onClose: () -> Void
+
+    @State private var tocQuery = ""
+
+    private var filteredChapters: [ChapterEntity] {
+        let q = tocQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return chapters }
+        return chapters.filter { $0.title.localizedCaseInsensitiveContains(q) }
+    }
+
+    private var sortedBookmarks: [BookmarkEntity] {
+        bookmarks.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollViewReader { proxy in
+                List {
+                    Section("目录") {
+                        if filteredChapters.isEmpty {
+                            Text(tocQuery.isEmpty ? "暂无章节" : "无匹配章节")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(filteredChapters, id: \.id) { ch in
+                                Button {
+                                    onSelectChapter(ch.index)
+                                } label: {
+                                    HStack {
+                                        Text(ch.title).foregroundStyle(InkShelfColors.ink)
+                                        Spacer()
+                                        if ch.index == currentChapterIndex {
+                                            Image(systemName: "checkmark").foregroundStyle(InkShelfColors.lamp)
+                                        }
+                                    }
+                                }
+                                .id(ch.id)
+                            }
+                        }
+                    }
+
+                    if !sortedBookmarks.isEmpty {
+                        Section("书签") {
+                            ForEach(sortedBookmarks, id: \.id) { bm in
+                                Button {
+                                    onSelectChapter(bm.chapterIndex)
+                                } label: {
+                                    VStack(alignment: .leading) {
+                                        Text(bm.title)
+                                        Text("第 \(bm.chapterIndex + 1) 章")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .searchable(text: $tocQuery, prompt: "搜索章节")
+                .navigationTitle("目录与书签")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("关闭", action: onClose)
+                    }
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button("回顶") {
+                            guard let first = filteredChapters.first else { return }
+                            withAnimation { proxy.scrollTo(first.id, anchor: .top) }
+                        }
+                        .disabled(filteredChapters.isEmpty)
+                        Button("到底") {
+                            guard let last = filteredChapters.last else { return }
+                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                        }
+                        .disabled(filteredChapters.isEmpty)
+                    }
+                }
+            }
         }
     }
 }

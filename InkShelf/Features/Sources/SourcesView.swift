@@ -17,8 +17,8 @@ struct SourcesView: View {
     @State private var showClearConfirm = false
     @State private var exportURL: URL?
     @State private var showShare = false
-    @State private var addingId: String?
-    @State private var readingBook: ReadingBookID?
+    @State private var searchTask: Task<Void, Never>?
+    @State private var previewHit: SearchBookHit?
 
     var body: some View {
         NavigationStack {
@@ -30,9 +30,6 @@ struct SourcesView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                .background {
-                    Color.clear
-                }
 
                 if tab == 0 {
                     searchPane
@@ -42,10 +39,6 @@ struct SourcesView: View {
             }
             .inkShelfScreenBackground()
             .navigationTitle("书源")
-            .fullScreenCover(item: $readingBook) { item in
-                ReaderView(bookID: item.id)
-                    .environmentObject(ReaderPrefs.shared)
-            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -61,6 +54,22 @@ struct SourcesView: View {
             .sheet(isPresented: $showImportSheet) {
                 ImportSourceSheet(text: $importText) { text in
                     Task { await importSources(text) }
+                }
+            }
+            .sheet(item: $previewHit) { hit in
+                if let source = sources.first(where: { $0.id == hit.sourceId }) {
+                    SearchBookPreviewView(hit: hit, source: source) { book in
+                        flash("已加入「\(book.title)」")
+                    }
+                } else {
+                    NavigationStack {
+                        ContentUnavailableView("书源不存在", systemImage: "exclamationmark.triangle")
+                            .toolbar {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button("关闭") { previewHit = nil }
+                                }
+                            }
+                    }
                 }
             }
             .confirmationDialog("清空全部书源？", isPresented: $showClearConfirm, titleVisibility: .visible) {
@@ -84,6 +93,9 @@ struct SourcesView: View {
                         .padding(.bottom, 12)
                 }
             }
+            .onDisappear {
+                searchTask?.cancel()
+            }
         }
     }
 
@@ -94,19 +106,19 @@ struct SourcesView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                     .inkGlass(cornerRadius: 14)
-                    .onSubmit { Task { await runSearch() } }
-                Button {
-                    Task { await runSearch() }
-                } label: {
-                    if searching {
-                        ProgressView()
-                    } else {
-                        Text("搜索")
-                    }
+                    .disabled(searching)
+                    .onSubmit { startSearch() }
+
+                if searching {
+                    Button("取消") { cancelSearch() }
+                        .tint(InkShelfColors.lamp)
+                        .inkGlassProminentButton()
+                } else {
+                    Button("搜索") { startSearch() }
+                        .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .tint(InkShelfColors.lamp)
+                        .inkGlassProminentButton()
                 }
-                .disabled(searching || keyword.trimmingCharacters(in: .whitespaces).isEmpty)
-                .tint(InkShelfColors.lamp)
-                .inkGlassProminentButton()
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
@@ -121,33 +133,37 @@ struct SourcesView: View {
 
             List {
                 ForEach(hits) { hit in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(hit.name).font(.headline)
-                        HStack {
-                            if let author = hit.author {
-                                Text(author).font(.subheadline).foregroundStyle(.secondary)
+                    Button {
+                        previewHit = hit
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(hit.name)
+                                .font(.headline)
+                                .foregroundStyle(InkShelfColors.ink)
+                            HStack {
+                                if let author = hit.author {
+                                    Text(author)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(hit.sourceName)
+                                    .font(.caption)
+                                    .foregroundStyle(InkShelfColors.lamp)
                             }
-                            Spacer()
-                            Text(hit.sourceName)
-                                .font(.caption)
+                            if let intro = hit.intro, !intro.isEmpty {
+                                Text(intro)
+                                    .font(.caption)
+                                    .lineLimit(2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text("点击预览详情")
+                                .font(.caption2.weight(.medium))
                                 .foregroundStyle(InkShelfColors.lamp)
                         }
-                        if let intro = hit.intro, !intro.isEmpty {
-                            Text(intro).font(.caption).lineLimit(2).foregroundStyle(.secondary)
-                        }
-                        Button {
-                            Task { await addHit(hit) }
-                        } label: {
-                            if addingId == hit.id {
-                                ProgressView()
-                            } else {
-                                Text("加入书架")
-                            }
-                        }
-                        .inkGlassButton()
-                        .disabled(addingId != nil)
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
+                    .buttonStyle(.plain)
                     .listRowBackground(Color.clear)
                 }
             }
@@ -195,6 +211,22 @@ struct SourcesView: View {
         .scrollContentBackground(.hidden)
     }
 
+    private func startSearch() {
+        searchTask?.cancel()
+        searchTask = Task { await runSearch() }
+    }
+
+    private func cancelSearch() {
+        searchTask?.cancel()
+        searchTask = nil
+        searching = false
+        if !hits.isEmpty {
+            progressText = "已取消 · 保留 \(hits.count) 条"
+        } else {
+            progressText = "已取消搜索"
+        }
+    }
+
     private func runSearch() async {
         let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
@@ -205,7 +237,12 @@ struct SourcesView: View {
         }
         searching = true
         hits = []
-        defer { searching = false }
+        progressText = "搜索中…"
+        defer {
+            if !Task.isCancelled {
+                searching = false
+            }
+        }
 
         struct Job: Sendable {
             let id: String
@@ -218,10 +255,12 @@ struct SourcesView: View {
         let batchSize = 6
         var done = 0
         for start in stride(from: 0, to: jobs.count, by: batchSize) {
+            if Task.isCancelled { break }
             let batch = Array(jobs[start..<min(start + batchSize, jobs.count)])
             await withTaskGroup(of: [SearchBookHit].self) { group in
                 for job in batch {
                     group.addTask {
+                        if Task.isCancelled { return [] }
                         if SourceEngine.isUnsupportedSearchJSON(job.legadoRaw) { return [] }
                         do {
                             return try await SourceEngine.search(
@@ -236,27 +275,25 @@ struct SourcesView: View {
                     }
                 }
                 for await part in group {
+                    if Task.isCancelled {
+                        group.cancelAll()
+                        break
+                    }
                     collected.append(contentsOf: part)
                 }
             }
+            if Task.isCancelled { break }
             done += batch.count
             progressText = "已搜 \(done)/\(jobs.count) · 命中 \(collected.count)"
             hits = collected
         }
-        progressText = collected.isEmpty ? "无结果（部分书源含 JS 已跳过）" : "完成 · \(collected.count) 条"
-    }
 
-    private func addHit(_ hit: SearchBookHit) async {
-        guard let source = sources.first(where: { $0.id == hit.sourceId }) else { return }
-        addingId = hit.id
-        defer { addingId = nil }
-        do {
-            let book = try await SourceRepository.addRemoteBook(hit: hit, source: source, context: context)
-            flash("已加入「\(book.title)」")
-            readingBook = ReadingBookID(id: book.id)
-        } catch {
-            flash("加入失败：\(error.localizedDescription)")
+        if Task.isCancelled {
+            progressText = collected.isEmpty ? "已取消搜索" : "已取消 · 保留 \(collected.count) 条"
+            hits = collected
+            return
         }
+        progressText = collected.isEmpty ? "无结果（部分书源含 JS 已跳过）" : "完成 · \(collected.count) 条"
     }
 
     private func importSources(_ text: String) async {

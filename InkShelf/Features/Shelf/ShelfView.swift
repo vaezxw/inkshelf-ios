@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 struct ShelfView: View {
     @Environment(\.modelContext) private var context
-    @Query(sort: \BookEntity.addedAt, order: .reverse) private var books: [BookEntity]
+    @Query private var books: [BookEntity]
     @State private var query = ""
     @State private var importing = false
     @State private var importProgress: ImportProgress?
@@ -13,10 +13,16 @@ struct ShelfView: View {
     @State private var path = NavigationPath()
     @State private var readingBook: ReadingBookID?
 
+    private var orderedBooks: [BookEntity] {
+        books.sorted {
+            ($0.lastReadAt ?? $0.addedAt) > ($1.lastReadAt ?? $1.addedAt)
+        }
+    }
+
     private var visible: [BookEntity] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if q.isEmpty { return books }
-        return books.filter {
+        if q.isEmpty { return orderedBooks }
+        return orderedBooks.filter {
             $0.title.lowercased().contains(q) || ($0.author ?? "").lowercased().contains(q)
         }
     }
