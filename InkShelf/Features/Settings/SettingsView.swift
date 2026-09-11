@@ -144,22 +144,27 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     .keyboardType(.emailAddress)
                     .autocorrectionDisabled()
+                    .textContentType(.username)
                 TextField("验证码", text: $otp)
                     .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
                 if let echoHint {
-                    Text("开发回显验证码：\(echoHint)")
+                    Text("验证码（开发回显）：\(echoHint)")
                         .font(.caption)
                         .foregroundStyle(InkShelfColors.lamp)
+                    Button("填入验证码 \(echoHint)") {
+                        otp = echoHint
+                    }
                 }
                 HStack {
                     Button("获取验证码") {
                         Task { await requestOTP() }
                     }
-                    .disabled(authBusy || email.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(authBusy || email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("登录") {
                         Task { await login() }
                     }
-                    .disabled(authBusy || email.isEmpty || otp.isEmpty)
+                    .disabled(authBusy || email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || otp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
 
@@ -171,18 +176,25 @@ struct SettingsView: View {
         } header: {
             Text("云同步（Cloudflare）")
         } footer: {
-            Text("部署 cloud/ Worker 后填写 API 地址。开发模式 OTP_ECHO=true 时会回显验证码。未登录时完全本地运行。")
+            Text("当前未接邮件服务：OTP_ECHO=true 时验证码会直接显示在本页，不会发到邮箱。国内访问 workers.dev 若失败，请检查网络/代理，或给 Worker 绑定自定义域名。API 地址改完后点键盘「完成」或点「获取验证码」会自动保存。")
         }
     }
 
     private func requestOTP() async {
         authBusy = true
         defer { authBusy = false }
-        CloudConfig.apiBaseURL = apiBase
+        CloudConfig.apiBaseURL = apiBase.trimmingCharacters(in: .whitespacesAndNewlines)
+        sync.lastError = nil
+        sync.lastMessage = nil
+        echoHint = nil
         do {
-            echoHint = try await sync.requestOTP(email: email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
-            if echoHint == nil {
-                sync.lastMessage = "验证码已发送"
+            let code = try await sync.requestOTP(email: email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            if let code, !code.isEmpty {
+                echoHint = code
+                otp = code
+                sync.lastMessage = "已回显验证码，可直接点登录"
+            } else {
+                sync.lastMessage = "已请求验证码（未回显，请查邮箱或开启 OTP_ECHO）"
             }
         } catch {
             sync.lastError = error.localizedDescription
