@@ -73,7 +73,6 @@ struct ShelfView: View {
                 }
             }
             .searchable(text: $query, prompt: "搜索书名或作者")
-            .modifier(MinimizableSearchIfAvailable())
             .fileImporter(
                 isPresented: $showImporter,
                 allowedContentTypes: [.plainText, .text, UTType(filenameExtension: "txt") ?? .data],
