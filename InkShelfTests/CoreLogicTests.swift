@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import ZIPFoundation
 @testable import InkShelf
 
 final class CoreLogicTests: XCTestCase {
@@ -93,5 +94,118 @@ final class CoreLogicTests: XCTestCase {
     func testUnsupportedJsSearchUrl() {
         XCTAssertTrue(SourceEngine.isUnsupportedSearchUrl("<js>foo</js>"))
         XCTAssertFalse(SourceEngine.isUnsupportedSearchUrl("https://example.com/search?q={{key}}"))
+    }
+
+    func testXPathConvertsCommonServerListRules() {
+        XCTAssertEqual(
+            PlistSourceConverter.xpathToLegadoRule(".//div[@id='content']/table//tr[position()>1]"),
+            "#content table tr:nth-child(n+2)"
+        )
+        XCTAssertEqual(
+            PlistSourceConverter.xpathToLegadoRule(".//td[1]/a[2]/@href"),
+            "td:nth-of-type(1) a:nth-of-type(2)@href"
+        )
+        XCTAssertEqual(
+            PlistSourceConverter.xpathToLegadoRule(".//div[@id='text_c']"),
+            "#text_c"
+        )
+    }
+
+    func testServerListPlistConvertsSearchableSource() throws {
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>serverList</key>
+            <array>
+                <dict>
+                    <key>serverName</key>
+                    <string>单元测试源</string>
+                    <key>serverHostURL</key>
+                    <string>http://www.example.com</string>
+                    <key>serverIsEndble</key>
+                    <true/>
+                    <key>detailBook</key>
+                    <dict>
+                        <key>mulu_list</key>
+                        <string>.//div[@class='chapter_list']</string>
+                        <key>mulu_title</key>
+                        <string>.//a</string>
+                        <key>mulu_url</key>
+                        <string>.//a/@href</string>
+                    </dict>
+                    <key>readBook</key>
+                    <dict>
+                        <key>chapterContent</key>
+                        <string>.//div[@id='text_c']</string>
+                    </dict>
+                    <key>searchBook</key>
+                    <dict>
+                        <key>searchFirstPageUrl</key>
+                        <string>http://www.example.com/search.php?searchkey=@@@</string>
+                        <key>searchPageRequestType</key>
+                        <string>0</string>
+                        <key>search_listDivision</key>
+                        <string>.//div[@id='content']//tr[position()&gt;1]</string>
+                        <key>search_parser</key>
+                        <dict>
+                            <key>search_bookname</key>
+                            <string>.//td[1]/a</string>
+                            <key>search_author</key>
+                            <string>.//td[3]</string>
+                            <key>search_detailUrl</key>
+                            <string>.//td[1]/a/@href</string>
+                        </dict>
+                    </dict>
+                </dict>
+            </array>
+        </dict>
+        </plist>
+        """
+        let items = try PlistSourceConverter.convert(plist)
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0]["bookSourceName"] as? String, "单元测试源")
+        XCTAssertEqual(items[0]["searchUrl"] as? String, "http://www.example.com/search.php?searchkey={{key}}")
+        let search = try XCTUnwrap(items[0]["ruleSearch"] as? [String: String])
+        XCTAssertEqual(search["bookList"], "#content tr:nth-child(n+2)")
+        XCTAssertEqual(search["name"], "td:nth-of-type(1) a")
+        let toc = try XCTUnwrap(items[0]["ruleToc"] as? [String: String])
+        XCTAssertEqual(toc["chapterList"], "div.chapter_list")
+        let content = try XCTUnwrap(items[0]["ruleContent"] as? [String: String])
+        XCTAssertEqual(content["content"], "#text_c@html")
+    }
+
+    func testZipArchiveExtractsPlist() throws {
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <plist version="1.0">
+        <dict>
+            <key>name</key><string>压缩包源</string>
+            <key>url</key><string>http://zip.example.com</string>
+            <key>search</key>
+            <dict>
+                <key>url</key><string>http://zip.example.com/s?q={key}</string>
+                <key>list</key><string>//div</string>
+                <key>title</key><string>.//a</string>
+                <key>link</key><string>.//a/@href</string>
+            </dict>
+        </dict>
+        </plist>
+        """
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("inkshelf-zip-test-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let plistURL = dir.appendingPathComponent("booksource.plist")
+        try Data(plist.utf8).write(to: plistURL)
+        let zipURL = dir.appendingPathComponent("booksource.zip")
+        try fm.zipItem(at: plistURL, to: zipURL)
+        let zipData = try Data(contentsOf: zipURL)
+        XCTAssertTrue(SourceArchive.isZip(zipData))
+        let texts = try SourceArchive.extractTexts(zipData)
+        XCTAssertEqual(texts.count, 1)
+        let items = try PlistSourceConverter.convert(texts[0])
+        XCTAssertEqual(items.first?["bookSourceName"] as? String, "压缩包源")
     }
 }

@@ -52,8 +52,18 @@ struct SourcesView: View {
                 }
             }
             .sheet(isPresented: $showImportSheet) {
-                ImportSourceSheet(text: $importText) { text in
-                    Task { await importSources(text) }
+                ImportSourceSheet(text: $importText) { payload in
+                    let n: Int
+                    switch payload {
+                    case .text(let text):
+                        n = try await SourceRepository.importSources(text, context: context)
+                    case .data(let data):
+                        n = try await SourceRepository.importSources(data: data, context: context)
+                    }
+                    flash("已导入 \(n) 个书源")
+                    importText = ""
+                    tab = 1
+                    return n
                 }
             }
             .sheet(item: $previewHit) { hit in
@@ -296,18 +306,6 @@ struct SourcesView: View {
         progressText = collected.isEmpty ? "无结果（部分书源含 JS 已跳过）" : "完成 · \(collected.count) 条"
     }
 
-    private func importSources(_ text: String) async {
-        do {
-            let n = try await SourceRepository.importSources(text, context: context)
-            flash("已导入 \(n) 个书源")
-            showImportSheet = false
-            importText = ""
-            tab = 1
-        } catch {
-            flash(error.localizedDescription)
-        }
-    }
-
     private func exportSources() {
         do {
             let json = try SourceRepository.exportJSON(context: context)
@@ -331,34 +329,125 @@ struct SourcesView: View {
 
 struct ImportSourceSheet: View {
     @Binding var text: String
-    var onImport: (String) -> Void
+    var onImport: (SourceImportValue) async throws -> Int
     @Environment(\.dismiss) private var dismiss
+    @State private var importing = false
+    @State private var errorMessage: String?
+    @State private var showFileImporter = false
 
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
-                Text("粘贴 Legado JSON、plist 全文，或填写可直链下载的 URL。")
+                Text("""
+                从网址获取书源，或粘贴 JSON / plist 全文。支持：
+                1. Gitee.com 以 .zip 结尾的下载地址
+                2. 浏览器可直接下载的 .plist 地址
+                3. 自定义 .zip 直链（如阿里云 OSS）
+                大文件请用「从文件导入」，不要整份粘贴。
+                """)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $text)
                     .font(.system(.footnote, design: .monospaced))
                     .padding(8)
                     .inkGlass(cornerRadius: 14)
+                    .disabled(importing)
+                Button("清空内容") {
+                    text = ""
+                    errorMessage = nil
+                }
+                .disabled(importing || text.isEmpty)
+                Button("从文件导入") { showFileImporter = true }
+                    .disabled(importing)
+                if importing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("正在解析书源…")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding()
             .inkShelfScreenBackground()
-            .navigationTitle("导入书源")
+            .navigationTitle("输入书源网络地址")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
+                        .disabled(importing)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("导入") {
-                        onImport(text)
+                    Button("获取书源") {
+                        Task { await runImport() }
                     }
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(importing || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            .fileImporter(
+                isPresented: $showFileImporter,
+                allowedContentTypes: [
+                    .xml, .text, .plainText, .json, .zip,
+                    UTType(filenameExtension: "plist") ?? .xml,
+                    UTType(filenameExtension: "txt") ?? .plainText,
+                ],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .failure(let error):
+                    errorMessage = error.localizedDescription
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    Task { await loadFile(url) }
+                }
+            }
+        }
+    }
+
+    private func loadFile(_ url: URL) async {
+        importing = true
+        errorMessage = nil
+        defer { importing = false }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: url)
+            }.value
+            if SourceArchive.isZip(data) || url.pathExtension.lowercased() == "zip" {
+                _ = try await onImport(.data(data))
+                dismiss()
+                return
+            }
+            let decoded = String(data: data, encoding: .utf8) ?? NovelTextDecoder.decode(data)
+            guard !decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                errorMessage = "文件为空"
+                return
+            }
+            if decoded.count < 40_000 {
+                text = decoded
+            }
+            _ = try await onImport(.text(decoded))
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func runImport() async {
+        importing = true
+        errorMessage = nil
+        defer { importing = false }
+        do {
+            _ = try await onImport(.text(text))
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

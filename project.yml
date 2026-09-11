@@ -15,6 +15,9 @@ packages:
   SwiftSoup:
     url: https://github.com/scinfu/SwiftSoup
     from: "2.7.0"
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    from: "0.9.19"
 targets:
   InkShelf:
     type: application
@@ -41,6 +44,7 @@ targets:
         DEVELOPMENT_TEAM: ""
     dependencies:
       - package: SwiftSoup
+      - package: ZIPFoundation
     info:
       path: InkShelf/Resources/Info.plist
       properties:
@@ -56,6 +60,7 @@ targets:
       - path: InkShelfTests
     dependencies:
       - target: InkShelf
+      - package: ZIPFoundation
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.inkshelf.app.tests

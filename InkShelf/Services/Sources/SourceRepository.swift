@@ -4,31 +4,80 @@ import SwiftData
 @MainActor
 enum SourceRepository {
     static func parseImportPayload(_ text: String) async throws -> [[String: Any]] {
-        var payload = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if looksLikeURL(payload) {
-            payload = try await fetchRemote(payload)
+            let data = try await download(payload)
+            return try await parseImportData(data, sourceURL: payload)
         }
+        return try await parseImportText(payload)
+    }
+
+    static func parseImportData(_ data: Data, sourceURL: String? = nil) async throws -> [[String: Any]] {
+        let hint = (sourceURL ?? "").lowercased()
+        if SourceArchive.isZip(data) || hint.contains(".zip") {
+            let texts = try await Task.detached(priority: .userInitiated) {
+                try SourceArchive.extractTexts(data)
+            }.value
+            var merged: [[String: Any]] = []
+            for text in texts {
+                if let items = try? await parseImportText(text) {
+                    merged.append(contentsOf: items)
+                }
+            }
+            guard !merged.isEmpty else {
+                throw SourceError.format("压缩包内没有可识别的书源（需要 plist 或 JSON）")
+            }
+            return merged
+        }
+        let text = (String(data: data, encoding: .utf8) ?? NovelTextDecoder.decode(data))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("<!") && !text.contains("<plist") {
+            throw SourceError.format("拿到的是网页而不是书源文件")
+        }
+        return try await parseImportText(text)
+    }
+
+    static func parseImportText(_ text: String) async throws -> [[String: Any]] {
+        var payload = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if payload.hasPrefix("\u{FEFF}") {
             payload = String(payload.dropFirst())
         }
-        if PlistSourceConverter.looksLikePlist(payload) {
-            return try PlistSourceConverter.convert(payload)
-        }
-        guard let data = payload.data(using: .utf8) else {
-            throw SourceError.format("书源内容无效")
-        }
+        let snapshot = payload
+        let data = try await Task.detached(priority: .userInitiated) {
+            if PlistSourceConverter.looksLikePlist(snapshot) {
+                let items = try PlistSourceConverter.convert(snapshot)
+                return try JSONSerialization.data(withJSONObject: items)
+            }
+            guard let raw = snapshot.data(using: .utf8) else {
+                throw SourceError.format("书源内容无效")
+            }
+            let obj = try JSONSerialization.jsonObject(with: raw)
+            if let list = obj as? [Any] {
+                return try JSONSerialization.data(withJSONObject: list.compactMap { $0 as? [String: Any] })
+            }
+            if let map = obj as? [String: Any] {
+                return try JSONSerialization.data(withJSONObject: [map])
+            }
+            throw SourceError.format("书源 JSON 格式无效")
+        }.value
         let obj = try JSONSerialization.jsonObject(with: data)
-        if let list = obj as? [Any] {
-            return list.compactMap { $0 as? [String: Any] }
+        guard let items = obj as? [[String: Any]], !items.isEmpty else {
+            throw SourceError.format("未解析到书源")
         }
-        if let map = obj as? [String: Any] {
-            return [map]
-        }
-        throw SourceError.format("书源 JSON 格式无效")
+        return items
     }
 
     static func importSources(_ text: String, context: ModelContext) async throws -> Int {
         let items = try await parseImportPayload(text)
+        return try commitImported(items, context: context)
+    }
+
+    static func importSources(data: Data, context: ModelContext, sourceURL: String? = nil) async throws -> Int {
+        let items = try await parseImportData(data, sourceURL: sourceURL)
+        return try commitImported(items, context: context)
+    }
+
+    private static func commitImported(_ items: [[String: Any]], context: ModelContext) throws -> Int {
         guard !items.isEmpty else { throw SourceError.format("未解析到书源") }
         let existing = try context.fetch(FetchDescriptor<BookSourceEntity>())
         var byURL: [String: BookSourceEntity] = [:]
@@ -177,13 +226,13 @@ enum SourceRepository {
 
     private static func toRawURL(_ url: String) -> String {
         var u = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        if u.contains("gitee.com/"), u.contains("/blob/") {
+        if u.contains("gitee.com/") {
             u = u.replacingOccurrences(of: "/blob/", with: "/raw/")
-        }
-        if let m = u.range(of: #"^https?://gitee\.com/([^/]+)/([^/]+)/raw/(.+)$"#, options: .regularExpression) {
-            let path = String(u[m])
-            // Prefer raw.giteeusercontent.com when possible — keep gitee raw if rewrite complex
-            _ = path
+            if let repo = u.range(of: #"^https?://gitee\.com/[^/]+/[^/]+/?$"#, options: .regularExpression) {
+                var base = String(u[repo])
+                if base.hasSuffix("/") { base.removeLast() }
+                u = base + "/repository/archive/master.zip"
+            }
         }
         if u.contains("github.com/"), u.contains("/blob/") {
             u = u
@@ -194,21 +243,17 @@ enum SourceRepository {
         return u
     }
 
-    private static func fetchRemote(_ url: String) async throws -> String {
+    private static func download(_ url: String) async throws -> Data {
         let raw = toRawURL(url)
         guard let requestURL = URL(string: raw) else { throw SourceError.network("无效链接") }
         var req = URLRequest(url: requestURL)
+        req.timeoutInterval = 60
         req.setValue("*/*", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: req)
         if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
             throw SourceError.network("HTTP \(http.statusCode)")
         }
-        let body = (String(data: data, encoding: .utf8) ?? NovelTextDecoder.decode(data))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if body.isEmpty { throw SourceError.format("远程书源内容为空") }
-        if body.hasPrefix("<!") && !body.contains("<plist") {
-            throw SourceError.format("拿到的是网页而不是书源文件")
-        }
-        return body
+        if data.isEmpty { throw SourceError.format("远程书源内容为空") }
+        return data
     }
 }
