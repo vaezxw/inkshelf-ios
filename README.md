@@ -50,10 +50,25 @@ SwiftUI + SwiftData 本地小说阅读器，面向 **iOS 26 Liquid Glass（液�
 | 阅读 | 左右翻页 / 上下滚动、边滑切章、目录书签、字号行距、纸面/夜间 |
 | 听书等 | `AVSpeechSynthesizer`、自动翻页、屏幕亮度 |
 | 书源 | Legado JSON / 简单 plist、启用管理、并行搜索、加入书架、TOC/正文缓存、导出/清空 |
-| 设置 | 与阅读偏好对齐；本地书乱码修复 |
+| 设置 | 阅读偏好；账号登录；Cloudflare 云同步；本地书乱码修复 |
 | UI | iOS 26 Liquid Glass；旧系统材质回退 |
 
-**明确不做**：完整 Legado JS；iCloud 同步；Android / Web；App Store 上架支持。
+**明确不做**：完整 Legado JS；iCloud / CloudKit；Android / Web；App Store 上架支持。  
+**可选能力**：自建 Cloudflare Worker（邮箱 OTP + D1/R2）跨设备同步书单、进度、书签、书源与偏好；本地 TXT 可按需上传 R2。
+
+---
+
+## 云同步（可选 · Cloudflare）
+
+默认纯本地；登录后才同步。后端在 [`cloud/`](./cloud/)。
+
+1. 按 `cloud/README.md` 创建 D1、R2，部署 Worker，设置 `JWT_SECRET`
+2. App 设置 → **云同步** → 填写 Worker URL → 邮箱 OTP 登录
+3. 默认同步：书单元数据、进度、书签、书源 JSON、阅读偏好（LWW）
+4. 可选：打开「同步本地 TXT 到 R2」以便换机恢复正文
+5. **不同步**远程章节 HTML 缓存（可再拉取）
+
+开发：`cd cloud && npm i && npm run db:migrate:local && npm run dev`（`OTP_ECHO=true` 时验证码回显）。
 
 ---
 
@@ -95,6 +110,8 @@ chmod +x scripts/build-local.sh
 - **SwiftData**：书 / 章节索引 / 书签 / 书源
 - **Documents**：`inkshelf/books/{id}/content.txt` 与 `cache/*.txt`
 - **UserDefaults**：阅读偏好（字号、模式、主题、自动读、亮度）
+- **Keychain**：云同步 JWT（登录后）
+- **Cloudflare（可选）**：D1 元数据 + R2 可选 TXT
 
 ---
 
@@ -116,8 +133,9 @@ InkShelf/
   App/           入口与根 Tab
   Features/      书架 / 阅读 / 书源 / 设置
   Theme/         色彩 + Liquid Glass 适配层
-  Services/      导入、分章、书源引擎、朗读等
+  Services/      导入、分章、书源引擎、朗读、Cloud 同步等
   Models/        SwiftData 与偏好
+cloud/           Cloudflare Workers + D1 + R2 API
 InkShelfTests/   核心逻辑单测
 scripts/         本地构建脚本
 codemagic.yaml   云构建

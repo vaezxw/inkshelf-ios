@@ -22,6 +22,7 @@ struct InkShelfApp: App {
         WindowGroup {
             RootTabView()
                 .environmentObject(ReaderPrefs.shared)
+                .environmentObject(SyncService.shared)
                 .tint(InkShelfColors.lamp)
                 .preferredColorScheme(.light)
         }

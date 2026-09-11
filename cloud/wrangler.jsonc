@@ -1,0 +1,26 @@
+{
+  "name": "inkshelf-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "OTP_ECHO": "true"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "inkshelf",
+      "database_id": "ae7c4485-854e-4dab-bb11-6734dd728174"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BOOKS",
+      "bucket_name": "inkshelf-books"
+    }
+  ]
+}

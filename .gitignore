@@ -6,3 +6,8 @@ DerivedData/
 *.xcworkspace
 xcuserdata/
 .idea/
+cloud/node_modules/
+cloud/.wrangler/
+cloud/dist/
+cloud/worker-configuration.d.ts
+cloud/.dev.vars

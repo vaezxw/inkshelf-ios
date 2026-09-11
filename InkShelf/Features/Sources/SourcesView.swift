@@ -202,7 +202,9 @@ struct SourcesView: View {
                             get: { src.enabled },
                             set: { v in
                                 src.enabled = v
+                                src.touch()
                                 try? context.save()
+                                SyncService.shared.schedulePush(context: context)
                             }
                         ))
                         .labelsHidden()
@@ -211,6 +213,7 @@ struct SourcesView: View {
                         Button(role: .destructive) {
                             context.delete(src)
                             try? context.save()
+                            SyncService.shared.schedulePush(context: context)
                         } label: {
                             Label("删除", systemImage: "trash")
                         }

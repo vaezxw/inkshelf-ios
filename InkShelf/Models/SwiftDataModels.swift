@@ -18,6 +18,8 @@ final class BookEntity {
     var lastReadAt: Date?
     var addedAt: Date
     var chapterCount: Int
+    var updatedAt: Date
+    var cloudR2Key: String?
 
     @Relationship(deleteRule: .cascade, inverse: \ChapterEntity.book)
     var chapters: [ChapterEntity]
@@ -54,6 +56,8 @@ final class BookEntity {
         lastReadAt: Date? = nil,
         addedAt: Date = .now,
         chapterCount: Int = 0,
+        updatedAt: Date = .now,
+        cloudR2Key: String? = nil,
         chapters: [ChapterEntity] = [],
         bookmarks: [BookmarkEntity] = []
     ) {
@@ -72,8 +76,14 @@ final class BookEntity {
         self.lastReadAt = lastReadAt
         self.addedAt = addedAt
         self.chapterCount = chapterCount
+        self.updatedAt = updatedAt
+        self.cloudR2Key = cloudR2Key
         self.chapters = chapters
         self.bookmarks = bookmarks
+    }
+
+    func touch() {
+        updatedAt = .now
     }
 }
 
@@ -113,6 +123,7 @@ final class BookmarkEntity {
     var title: String
     var scrollOffset: Double
     var createdAt: Date
+    var updatedAt: Date
     var book: BookEntity?
 
     init(
@@ -121,6 +132,7 @@ final class BookmarkEntity {
         title: String,
         scrollOffset: Double = 0,
         createdAt: Date = .now,
+        updatedAt: Date = .now,
         book: BookEntity? = nil
     ) {
         self.id = id
@@ -128,6 +140,7 @@ final class BookmarkEntity {
         self.title = title
         self.scrollOffset = scrollOffset
         self.createdAt = createdAt
+        self.updatedAt = updatedAt
         self.book = book
     }
 }
@@ -141,6 +154,7 @@ final class BookSourceEntity {
     var legadoRaw: String
     var groupName: String?
     var addedAt: Date
+    var updatedAt: Date
 
     init(
         id: String = UUID().uuidString,
@@ -149,7 +163,8 @@ final class BookSourceEntity {
         enabled: Bool = true,
         legadoRaw: String,
         groupName: String? = nil,
-        addedAt: Date = .now
+        addedAt: Date = .now,
+        updatedAt: Date = .now
     ) {
         self.id = id
         self.name = name
@@ -158,5 +173,10 @@ final class BookSourceEntity {
         self.legadoRaw = legadoRaw
         self.groupName = groupName
         self.addedAt = addedAt
+        self.updatedAt = updatedAt
+    }
+
+    func touch() {
+        updatedAt = .now
     }
 }

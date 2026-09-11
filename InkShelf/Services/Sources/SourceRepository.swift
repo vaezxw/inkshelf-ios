@@ -95,6 +95,7 @@ enum SourceRepository {
                 old.name = display
                 old.legadoRaw = raw
                 old.groupName = item["bookSourceGroup"] as? String
+                old.touch()
             } else {
                 let entity = BookSourceEntity(
                     name: display,
@@ -109,6 +110,7 @@ enum SourceRepository {
             count += 1
         }
         try context.save()
+        SyncService.shared.schedulePush(context: context)
         return count
     }
 
@@ -128,6 +130,7 @@ enum SourceRepository {
         let sources = try context.fetch(FetchDescriptor<BookSourceEntity>())
         for s in sources { context.delete(s) }
         try context.save()
+        SyncService.shared.schedulePush(context: context)
     }
 
     static func rawMap(from entity: BookSourceEntity) -> [String: Any]? {
@@ -168,6 +171,7 @@ enum SourceRepository {
         }
         context.insert(book)
         try context.save()
+        SyncService.shared.schedulePush(context: context)
         return book
     }
 
@@ -190,8 +194,10 @@ enum SourceRepository {
         }
         book.chapterCount = chapters.count
         book.lastChapterIndex = min(book.lastChapterIndex, max(chapters.count - 1, 0))
+        book.touch()
         BookFileStore.clearCache(bookId: book.id)
         try context.save()
+        SyncService.shared.schedulePush(context: context)
     }
 
     static func loadRemoteChapterText(

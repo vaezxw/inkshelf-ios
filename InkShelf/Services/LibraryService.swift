@@ -28,6 +28,7 @@ enum LibraryService {
         }
         context.insert(book)
         try context.save()
+        SyncService.shared.schedulePush(context: context)
         return book
     }
 
@@ -54,6 +55,7 @@ enum LibraryService {
         context.delete(book)
         try context.save()
         BookFileStore.deleteBook(bookId: id)
+        SyncService.shared.schedulePush(context: context)
     }
 
     static func updateProgress(
@@ -65,7 +67,9 @@ enum LibraryService {
         book.lastChapterIndex = chapterIndex
         book.lastScrollOffset = scrollOffset
         book.lastReadAt = .now
+        book.touch()
         try context.save()
+        SyncService.shared.schedulePush(context: context)
     }
 
     /// Prefer chapter file; fall back to content slice and backfill chapter file.
@@ -142,7 +146,9 @@ enum LibraryService {
     ) throws -> Bool {
         if let existing = book.bookmarks.first(where: { $0.chapterIndex == chapterIndex }) {
             context.delete(existing)
+            book.touch()
             try context.save()
+            SyncService.shared.schedulePush(context: context)
             return false
         }
         let mark = BookmarkEntity(
@@ -153,7 +159,9 @@ enum LibraryService {
         )
         book.bookmarks.append(mark)
         context.insert(mark)
+        book.touch()
         try context.save()
+        SyncService.shared.schedulePush(context: context)
         return true
     }
 }
