@@ -257,11 +257,35 @@ enum SourceEngine {
                 content = regex.stringByReplacingMatches(in: content, range: range, withTemplate: "")
             }
         }
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        content = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if content.isEmpty {
+            throw SourceError.format("正文解析为空（书源规则可能含 JS，或页面结构不匹配）")
+        }
+        return content
     }
 
     private static func extractContent(body: String, contentRule: String?) -> String {
-        guard let contentRule, !contentRule.trimmingCharacters(in: .whitespaces).isEmpty else { return "" }
+        guard let contentRule, !contentRule.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return fallbackPlainText(body)
+        }
+        // Legado allows alternate rules separated by ||
+        let candidates = contentRule
+            .components(separatedBy: "||")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for rule in candidates {
+            let extracted = extractSingleContent(body: body, contentRule: rule)
+            if extracted.count >= 40 { return extracted }
+        }
+        for rule in candidates {
+            let extracted = extractSingleContent(body: body, contentRule: rule)
+            if !extracted.isEmpty { return extracted }
+        }
+        return fallbackPlainText(body)
+    }
+
+    private static func extractSingleContent(body: String, contentRule: String) -> String {
         if RuleSelector.isJsonRule(contentRule) || body.trimmingCharacters(in: .whitespaces).hasPrefix("{") {
             guard let data = body.data(using: .utf8),
                   let root = try? JSONSerialization.jsonObject(with: data) else { return "" }
@@ -269,24 +293,55 @@ enum SourceEngine {
             if content.contains("<"), content.contains(">") {
                 content = RuleSelector.htmlToPlain(content)
             }
-            return content
+            return content.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard let doc = try? SwiftSoup.parse(body) else { return "" }
         let (base, replaces) = RuleSelector.splitAllInOne(contentRule)
         let parts = RuleSelector.splitAtChain(base)
-        let attr = parts.last?.lowercased() == "html" ? "html" : "text"
+        let attr = parts.last?.lowercased()
         if attr == "html" {
-            let selectorParts = parts.dropLast()
-            let selector = selectorParts.first.map { RuleSelector.splitIndexed($0).0 } ?? ""
+            let selectorParts = Array(parts.dropLast())
             let html: String
-            if selector.isEmpty {
+            if selectorParts.isEmpty {
                 html = (try? doc.body()?.html()) ?? ""
             } else {
-                html = (try? doc.select(selector).first()?.html()) ?? ""
+                let joined = selectorParts.joined(separator: " ")
+                let selector = RuleSelector.normalizeCss(RuleSelector.splitIndexed(selectorParts[0]).0)
+                if selector.isEmpty {
+                    html = (try? doc.body()?.html()) ?? ""
+                } else if selectorParts.count == 1 {
+                    html = (try? doc.select(selector).first()?.html()) ?? ""
+                } else {
+                    // Prefer full chain via readFromDocument then re-fetch html when possible
+                    _ = joined
+                    html = (try? doc.select(selector).first()?.html()) ?? ""
+                }
             }
             return RuleSelector.applyReplaces(RuleSelector.htmlToPlain(html), replaces)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return RuleSelector.applyReplaces(RuleSelector.readFromDocument(doc, rule: base), replaces)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func fallbackPlainText(_ body: String) -> String {
+        guard let doc = try? SwiftSoup.parse(body) else {
+            return body.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let selectors = [
+            "#content", "#chaptercontent", "#chapterContent", ".content", ".chapter-content",
+            "#BookText", "#booktxt", ".read-content", "article", "#novelcontent", ".novel_content",
+        ]
+        for sel in selectors {
+            if let node = try? doc.select(sel).first() {
+                let text = ((try? node.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.count >= 80 { return text }
+            }
+        }
+        // Strip obvious chrome then take body text
+        _ = try? doc.select("script, style, nav, header, footer, iframe").remove()
+        let text = ((try? doc.body()?.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.count >= 80 ? text : ""
     }
 
     private static func getBody(url: String, headerJson: Any?) async throws -> String {
@@ -306,6 +361,12 @@ enum SourceEngine {
                 map.forEach { headers[$0.key] = "\($0.value)" }
             }
         }
+        if headers["Referer"] == nil, let scheme = url.scheme, let host = url.host {
+            headers["Referer"] = "\(scheme)://\(host)/"
+        }
+        if headers["User-Agent"] == nil {
+            headers["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        }
         headers.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
         if spec.method == "POST" {
             req.httpBody = spec.body?.data(using: .utf8)
@@ -317,6 +378,7 @@ enum SourceEngine {
         if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
             throw SourceError.network("HTTP \(http.statusCode)")
         }
+        if data.isEmpty { throw SourceError.network("服务器返回空内容") }
         return NovelTextDecoder.decode(data)
     }
 

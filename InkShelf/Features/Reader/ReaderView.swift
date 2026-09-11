@@ -36,18 +36,28 @@ struct ReaderView: View {
                 if loading && chapterText.isEmpty {
                     ProgressView("加载中…")
                 } else if let errorMessage, chapterText.isEmpty {
-                    ContentUnavailableView("无法打开", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
+                    ContentUnavailableView {
+                        Label("无法打开", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(errorMessage)
+                    } actions: {
+                        Button("重试") {
+                            Task { await loadChapter(resetPage: true) }
+                        }
+                        .tint(InkShelfColors.lamp)
+                        .inkGlassProminentButton()
+                    }
                 } else {
-                    contentArea(size: geo.size)
+                    contentArea(size: geo.size, safeTop: geo.safeAreaInsets.top, safeBottom: geo.safeAreaInsets.bottom)
                 }
                 if showChrome {
-                    chromeOverlay
+                    chromeOverlay(safeTop: geo.safeAreaInsets.top, safeBottom: geo.safeAreaInsets.bottom)
                 }
                 if let toast {
                     VStack {
                         Spacer()
                         GlassToast(message: toast)
-                            .padding(.bottom, 28)
+                            .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 72)
                     }
                 }
             }
@@ -77,8 +87,10 @@ struct ReaderView: View {
             .sheet(isPresented: $showTOC) { tocSheet }
             .sheet(isPresented: $showPrefs) { ReaderPrefsSheet() }
             .toolbar(.hidden, for: .navigationBar)
+            .toolbar(.hidden, for: .tabBar)
             .statusBarHidden(!showChrome)
         }
+        .ignoresSafeArea(edges: showChrome ? [] : .all)
     }
 
     private var palette: (bg: Color, fg: Color, muted: Color) {
@@ -93,8 +105,10 @@ struct ReaderView: View {
     }
 
     @ViewBuilder
-    private func contentArea(size: CGSize) -> some View {
-        let pad = EdgeInsets(top: 48, leading: 20, bottom: 36, trailing: 20)
+    private func contentArea(size: CGSize, safeTop: CGFloat, safeBottom: CGFloat) -> some View {
+        let topPad: CGFloat = showChrome ? max(safeTop, 12) + 56 : max(safeTop, 12) + 8
+        let bottomPad: CGFloat = showChrome ? max(safeBottom, 8) + 108 : max(safeBottom, 8) + 16
+        let pad = EdgeInsets(top: topPad, leading: 20, bottom: bottomPad, trailing: 20)
         let pageSize = CGSize(
             width: max(size.width - pad.leading - pad.trailing, 40),
             height: max(size.height - pad.top - pad.bottom, 80)
@@ -196,26 +210,27 @@ struct ReaderView: View {
         }
     }
 
-    private var chromeOverlay: some View {
+    private func chromeOverlay(safeTop: CGFloat, safeBottom: CGFloat) -> some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 10) {
                 Button { dismiss() } label: {
                     Image(systemName: "chevron.left")
                         .font(.body.weight(.semibold))
-                        .padding(10)
+                        .frame(width: 36, height: 36)
                 }
                 .inkGlassCapsule(interactive: true)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(book?.title ?? "")
                         .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(palette.fg)
                         .lineLimit(1)
                     Text(chapters.indices.contains(chapterIndex) ? chapters[chapterIndex].title : "")
                         .font(.caption2)
                         .foregroundStyle(palette.muted)
                         .lineLimit(1)
                 }
-                Spacer()
+                Spacer(minLength: 8)
                 Text("\(chapterIndex + 1)/\(max(chapters.count, 1))")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(palette.muted)
@@ -224,23 +239,29 @@ struct ReaderView: View {
                     .inkGlassCapsule()
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.top, max(safeTop, 12) + 6)
+            .padding(.bottom, 10)
             .frame(maxWidth: .infinity)
-            .inkGlass(cornerRadius: 0)
-            .ignoresSafeArea(edges: .top)
+            .background(.ultraThinMaterial)
 
             Spacer()
 
-            InkGlassGroup(spacing: 14) {
-                HStack(spacing: 14) {
-                    chromeIconButton("chevron.left.2", disabled: chapterIndex <= 0) {
+            VStack(spacing: 10) {
+                HStack(spacing: 0) {
+                    chromeToolButton("chevron.left.2", title: "上一章", disabled: chapterIndex <= 0) {
                         goChapter(chapterIndex - 1)
                     }
-                    chromeIconButton("list.bullet") { showTOC = true }
-                    chromeIconButton(isBookmarked ? "bookmark.fill" : "bookmark") {
+                    chromeToolButton("list.bullet", title: "目录") { showTOC = true }
+                    chromeToolButton("chevron.right.2", title: "下一章", disabled: chapterIndex >= chapters.count - 1) {
+                        goChapter(chapterIndex + 1)
+                    }
+                }
+
+                HStack(spacing: 0) {
+                    chromeToolButton(isBookmarked ? "bookmark.fill" : "bookmark", title: "书签") {
                         toggleBookmark()
                     }
-                    chromeIconButton(speech.isSpeaking ? "stop.fill" : "speaker.wave.2.fill") {
+                    chromeToolButton(speech.isSpeaking ? "stop.fill" : "speaker.wave.2.fill", title: "听书") {
                         if speech.isSpeaking {
                             speech.stop()
                         } else {
@@ -248,42 +269,47 @@ struct ReaderView: View {
                             speech.speak(chapterText)
                         }
                     }
-                    chromeIconButton(
+                    chromeToolButton(
                         prefs.autoReadEnabled ? "forward.fill" : "forward",
+                        title: "自动",
                         tint: prefs.autoReadEnabled ? InkShelfColors.lamp : nil
                     ) {
                         prefs.autoReadEnabled.toggle()
                     }
-                    chromeIconButton("textformat.size") { showPrefs = true }
-                    chromeIconButton("chevron.right.2", disabled: chapterIndex >= chapters.count - 1) {
-                        goChapter(chapterIndex + 1)
-                    }
+                    chromeToolButton("textformat.size", title: "排版") { showPrefs = true }
                 }
-                .font(.title3)
-                .foregroundStyle(palette.fg)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .frame(maxWidth: .infinity)
-                .inkGlass(cornerRadius: 24, tint: InkShelfColors.lamp.opacity(0.12))
-                .padding(.horizontal, 12)
-                .padding(.bottom, 10)
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, max(safeBottom, 10) + 8)
+            .frame(maxWidth: .infinity)
+            .background(.ultraThinMaterial)
         }
     }
 
-    private func chromeIconButton(
+    private func chromeToolButton(
         _ systemName: String,
+        title: String,
         disabled: Bool = false,
         tint: Color? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .foregroundStyle(tint ?? palette.fg)
-                .frame(width: 36, height: 36)
+            VStack(spacing: 4) {
+                Image(systemName: systemName)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(tint ?? palette.fg)
+                    .frame(height: 22)
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(palette.muted)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
         }
         .disabled(disabled)
         .opacity(disabled ? 0.35 : 1)
+        .buttonStyle(.plain)
     }
 
     private var tocSheet: some View {
@@ -354,7 +380,7 @@ struct ReaderView: View {
                 chapterText = try LibraryService.loadChapterText(book: book, chapterIndex: chapterIndex)
             }
             if chapterText.isEmpty && book.isRemote {
-                errorMessage = "章节内容为空"
+                errorMessage = "章节内容为空（请换书源，或该站正文规则含 JS）"
             }
             rebuildPages(size: contentSize)
             if resetPage { pageIndex = 0 }
