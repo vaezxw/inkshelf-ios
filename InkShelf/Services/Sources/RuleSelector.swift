@@ -158,11 +158,11 @@ enum RuleSelector {
         case "html":
             return (try? node.html()) ?? ""
         case "text", "textnodes":
-            return node.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            return ((try? node.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         case "owntext":
             return node.ownText().trimmingCharacters(in: .whitespacesAndNewlines)
         default:
-            return node.attr(attr)
+            return (try? node.attr(attr)) ?? ""
         }
     }
 
@@ -197,7 +197,7 @@ enum RuleSelector {
         if path.isEmpty { return root }
         var current: Any? = root
         for rawPart in path.split(separator: ".") {
-            guard let current else { return nil }
+            guard let cursor = current else { return nil }
             var part = String(rawPart)
             var wantAll = false
             if part.hasSuffix("[*]") {
@@ -205,7 +205,7 @@ enum RuleSelector {
                 part = String(part.dropLast(3))
             }
             if !part.isEmpty {
-                if let map = current as? [String: Any] {
+                if let map = cursor as? [String: Any] {
                     current = map[part]
                 } else {
                     return nil
@@ -250,8 +250,11 @@ enum RuleSelector {
                 return nextLabel
             }()
             if let links = try? doc.select("a") {
-                for link in links where link.text().contains(keyword) {
-                    let href = link.attr("href").trimmingCharacters(in: .whitespaces)
+                for link in links {
+                    let label = (try? link.text()) ?? ""
+                    guard label.contains(keyword) else { continue }
+                    let href = ((try? link.attr("href")) ?? "")
+                        .trimmingCharacters(in: .whitespaces)
                     if !href.isEmpty, href != "#", !href.hasPrefix("javascript:") {
                         return href
                     }

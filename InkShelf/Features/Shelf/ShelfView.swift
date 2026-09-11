@@ -162,7 +162,7 @@ struct ShelfView: View {
 private struct MinimizableSearchIfAvailable: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26, *) {
-            content.searchToolbarBehavior(.minimizable)
+            content.searchToolbarBehavior(.minimized)
         } else {
             content
         }
