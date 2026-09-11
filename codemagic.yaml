@@ -1,0 +1,59 @@
+workflows:
+  ios-unsigned-ipa:
+    name: iOS Unsigned IPA (Sideloadly)
+    max_build_duration: 60
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+      vars:
+        APP_NAME: InkShelf
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          brew install xcodegen || true
+          which xcodegen
+          xcodegen --version
+      - name: Generate Xcode project
+        script: |
+          set -euo pipefail
+          xcodegen generate
+      - name: Resolve Swift packages
+        script: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies -project InkShelf.xcodeproj -scheme InkShelf
+      - name: Build iOS unsigned
+        script: |
+          set -euo pipefail
+          xcodebuild \
+            -project InkShelf.xcodeproj \
+            -scheme InkShelf \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+      - name: Package unsigned IPA for Sideloadly
+        script: |
+          set -euo pipefail
+          APP_PATH="$(find build/DerivedData/Build/Products -name 'InkShelf.app' -type d | head -n 1)"
+          if [ -z "${APP_PATH}" ]; then
+            echo "InkShelf.app not found"
+            find build -maxdepth 8 -type d -name '*.app' -print || true
+            exit 1
+          fi
+          echo "Packaging: ${APP_PATH}"
+          IPA_DIR="build/ipa"
+          rm -rf "${IPA_DIR}"
+          mkdir -p "${IPA_DIR}/Payload"
+          cp -R "${APP_PATH}" "${IPA_DIR}/Payload/"
+          (
+            cd "${IPA_DIR}"
+            zip -qr "${APP_NAME}-unsigned.ipa" Payload
+            rm -rf Payload
+          )
+          ls -lah "${IPA_DIR}"
+    artifacts:
+      - build/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
