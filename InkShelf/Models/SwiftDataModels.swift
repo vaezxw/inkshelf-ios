@@ -18,7 +18,7 @@ final class BookEntity {
     var lastReadAt: Date?
     var addedAt: Date
     var chapterCount: Int
-    var updatedAt: Date = .now
+    var updatedAt: Date = Date()
     var cloudR2Key: String?
 
     @Relationship(deleteRule: .cascade, inverse: \ChapterEntity.book)
@@ -123,7 +123,7 @@ final class BookmarkEntity {
     var title: String
     var scrollOffset: Double
     var createdAt: Date
-    var updatedAt: Date = .now
+    var updatedAt: Date = Date()
     var book: BookEntity?
 
     init(
@@ -154,7 +154,7 @@ final class BookSourceEntity {
     var legadoRaw: String
     var groupName: String?
     var addedAt: Date
-    var updatedAt: Date = .now
+    var updatedAt: Date = Date()
 
     init(
         id: String = UUID().uuidString,
