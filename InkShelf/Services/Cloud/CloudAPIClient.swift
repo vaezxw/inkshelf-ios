@@ -124,19 +124,22 @@ enum CloudAPIError: LocalizedError {
 }
 
 enum CloudAPIClient {
-    private static let iso = ISO8601DateFormatter()
+    private static func makeISO(_ options: ISO8601DateFormatter.Options) -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = options
+        return formatter
+    }
 
     static func isoString(_ date: Date) -> String {
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return iso.string(from: date)
+        makeISO([.withInternetDateTime, .withFractionalSeconds]).string(from: date)
     }
 
     static func date(from string: String?) -> Date? {
         guard let string, !string.isEmpty else { return nil }
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = iso.date(from: string) { return d }
-        iso.formatOptions = [.withInternetDateTime]
-        return iso.date(from: string)
+        if let d = makeISO([.withInternetDateTime, .withFractionalSeconds]).date(from: string) {
+            return d
+        }
+        return makeISO([.withInternetDateTime]).date(from: string)
     }
 
     static func requestOTP(email: String) async throws -> CloudOTPResponse {
