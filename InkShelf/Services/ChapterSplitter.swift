@@ -14,7 +14,7 @@ enum ChapterSplitter {
     )
 
     /// Soft chunk size (UTF-16) when the file has almost no chapter headings.
-    private static let fallbackChunkUTF16 = 10_000
+    private static let fallbackChunkUTF16 = 24_000
 
     static func split(_ text: String) -> [ChapterRange] {
         let ns = text as NSString
@@ -23,24 +23,28 @@ enum ChapterSplitter {
             return [ChapterRange(title: "全文", start: 0, end: 0)]
         }
 
-        let matches = heading.matches(in: text, range: NSRange(location: 0, length: length))
-        if matches.count < 2 {
+        var matchRanges: [NSTextCheckingResult] = []
+        heading.enumerateMatches(in: text, options: [], range: NSRange(location: 0, length: length)) { result, _, _ in
+            if let result { matchRanges.append(result) }
+        }
+
+        if matchRanges.count < 2 {
             return splitBySize(ns, chunkUTF16: fallbackChunkUTF16)
         }
 
         var chapters: [ChapterRange] = []
-        let first = matches[0]
+        let first = matchRanges[0]
         if first.range.location > 80 {
             chapters.append(ChapterRange(title: "前言", start: 0, end: first.range.location))
         }
 
-        for (i, match) in matches.enumerated() {
+        for (i, match) in matchRanges.enumerated() {
             let titleRange = match.range(at: 1)
             let title = titleRange.location != NSNotFound
                 ? ns.substring(with: titleRange).trimmingCharacters(in: .whitespacesAndNewlines)
                 : "章节 \(i + 1)"
             let start = match.range.location
-            let end = i + 1 < matches.count ? matches[i + 1].range.location : length
+            let end = i + 1 < matchRanges.count ? matchRanges[i + 1].range.location : length
             if end > start {
                 chapters.append(ChapterRange(title: title, start: start, end: end))
             }

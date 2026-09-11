@@ -7,6 +7,7 @@ struct BookDetailView: View {
     @Query private var books: [BookEntity]
     @State private var refreshing = false
     @State private var message: String?
+    @State private var readingBook: ReadingBookID?
 
     private var book: BookEntity? { books.first { $0.id == bookID } }
 
@@ -53,8 +54,8 @@ struct BookDetailView: View {
 
                         InkGlassGroup(spacing: 12) {
                             VStack(spacing: 12) {
-                                NavigationLink {
-                                    ReaderView(bookID: book.id)
+                                Button {
+                                    readingBook = ReadingBookID(id: book.id)
                                 } label: {
                                     Text("继续阅读")
                                         .frame(maxWidth: .infinity)
@@ -91,6 +92,10 @@ struct BookDetailView: View {
                 .inkShelfScreenBackground()
                 .navigationTitle("详情")
                 .navigationBarTitleDisplayMode(.inline)
+                .fullScreenCover(item: $readingBook) { item in
+                    ReaderView(bookID: item.id)
+                        .environmentObject(ReaderPrefs.shared)
+                }
             } else {
                 ContentUnavailableView("书籍不存在", systemImage: "questionmark.folder")
                     .inkShelfScreenBackground()

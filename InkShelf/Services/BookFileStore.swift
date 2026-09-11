@@ -18,6 +18,16 @@ enum BookFileStore {
         bookDirectory(bookId: bookId).appendingPathComponent("content.txt")
     }
 
+    static func chaptersDirectory(bookId: String) -> URL {
+        let dir = bookDirectory(bookId: bookId).appendingPathComponent("chapters", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    static func chapterURL(bookId: String, index: Int) -> URL {
+        chaptersDirectory(bookId: bookId).appendingPathComponent("\(index).txt")
+    }
+
     static func cacheURL(bookId: String, chapterIndex: Int) -> URL {
         let cache = bookDirectory(bookId: bookId).appendingPathComponent("cache", isDirectory: true)
         try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
@@ -27,6 +37,10 @@ enum BookFileStore {
     static func writeContent(bookId: String, text: String) throws {
         let url = contentURL(bookId: bookId)
         try text.data(using: .utf8)?.write(to: url, options: .atomic)
+    }
+
+    static func writeContentData(bookId: String, data: Data) throws {
+        try data.write(to: contentURL(bookId: bookId), options: .atomic)
     }
 
     static func readContent(bookId: String) throws -> String {
@@ -41,6 +55,28 @@ enum BookFileStore {
         let safeLen = min(max(length, 0), ns.length - safeStart)
         guard safeLen > 0 else { return "" }
         return ns.substring(with: NSRange(location: safeStart, length: safeLen))
+    }
+
+    static func writeChapter(bookId: String, index: Int, text: String) throws {
+        try text.data(using: .utf8)?.write(to: chapterURL(bookId: bookId, index: index), options: .atomic)
+    }
+
+    static func readChapter(bookId: String, index: Int) -> String? {
+        let url = chapterURL(bookId: bookId, index: index)
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    static func writeChapters(bookId: String, text: String, ranges: [ChapterRange]) throws {
+        let ns = text as NSString
+        for (i, range) in ranges.enumerated() {
+            let start = min(max(range.start, 0), ns.length)
+            let end = min(max(range.end, start), ns.length)
+            let slice = ns.substring(with: NSRange(location: start, length: end - start))
+            try writeChapter(bookId: bookId, index: i, text: slice)
+        }
     }
 
     static func writeCache(bookId: String, chapterIndex: Int, text: String) throws {

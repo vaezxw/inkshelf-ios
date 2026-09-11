@@ -1,45 +1,8 @@
 import Foundation
 import SwiftData
-import UniformTypeIdentifiers
-
-struct PreparedLocalBook: Sendable {
-    var bookId: String
-    var title: String
-    var contentRelativePath: String
-    var chapters: [PreparedChapter]
-}
-
-struct PreparedChapter: Sendable {
-    var index: Int
-    var title: String
-    var startOffset: Int
-    var length: Int
-}
 
 @MainActor
 enum LibraryService {
-    /// Heavy decode / split / disk write — call off the main actor.
-    nonisolated static func prepareLocalImport(data: Data, displayName: String) throws -> PreparedLocalBook {
-        let text = NovelTextDecoder.decode(data)
-        let bookId = UUID().uuidString
-        try BookFileStore.writeContent(bookId: bookId, text: text)
-        let ranges = ChapterSplitter.split(text)
-        let chapters = ranges.enumerated().map { i, range in
-            PreparedChapter(
-                index: i,
-                title: range.title,
-                startOffset: range.start,
-                length: range.length
-            )
-        }
-        return PreparedLocalBook(
-            bookId: bookId,
-            title: cleanTitle(displayName),
-            contentRelativePath: BookFileStore.relativeContentPath(bookId: bookId),
-            chapters: chapters
-        )
-    }
-
     static func commitLocalImport(_ prepared: PreparedLocalBook, context: ModelContext) throws -> BookEntity {
         let book = BookEntity(
             id: prepared.bookId,
@@ -48,7 +11,8 @@ enum LibraryService {
             contentRelativePath: prepared.contentRelativePath,
             chapterCount: prepared.chapters.count
         )
-        for item in prepared.chapters {
+        let batchSize = 50
+        for (offset, item) in prepared.chapters.enumerated() {
             let chapter = ChapterEntity(
                 index: item.index,
                 title: item.title,
@@ -58,6 +22,9 @@ enum LibraryService {
             )
             book.chapters.append(chapter)
             context.insert(chapter)
+            if offset > 0, offset % batchSize == 0 {
+                try context.save()
+            }
         }
         context.insert(book)
         try context.save()
@@ -67,12 +34,19 @@ enum LibraryService {
     static func importTxt(
         data: Data,
         displayName: String,
-        context: ModelContext
+        context: ModelContext,
+        onProgress: (@MainActor (ImportProgress) -> Void)? = nil
     ) async throws -> BookEntity {
-        let prepared = try await Task.detached(priority: .userInitiated) {
-            try prepareLocalImport(data: data, displayName: displayName)
-        }.value
-        return try commitLocalImport(prepared, context: context)
+        let pipeline = ImportPipeline()
+        let prepared = try await pipeline.prepare(data: data, displayName: displayName) { progress in
+            Task { @MainActor in
+                onProgress?(progress)
+            }
+        }
+        onProgress?(ImportProgress(stage: .saving, fraction: 0.95))
+        let book = try commitLocalImport(prepared, context: context)
+        onProgress?(ImportProgress(stage: .done, fraction: 1))
+        return book
     }
 
     static func deleteBook(_ book: BookEntity, context: ModelContext) throws {
@@ -94,6 +68,18 @@ enum LibraryService {
         try context.save()
     }
 
+    /// Prefer chapter file; fall back to content slice and backfill chapter file.
+    nonisolated static func loadLocalChapterText(bookId: String, chapterIndex: Int, start: Int, length: Int) throws -> String {
+        if let cached = BookFileStore.readChapter(bookId: bookId, index: chapterIndex), !cached.isEmpty {
+            return cached
+        }
+        let slice = try BookFileStore.readContentSlice(bookId: bookId, start: start, length: length)
+        if !slice.isEmpty {
+            try? BookFileStore.writeChapter(bookId: bookId, index: chapterIndex, text: slice)
+        }
+        return slice
+    }
+
     static func loadChapterText(book: BookEntity, chapterIndex: Int) throws -> String {
         let chapters = book.chapters.sorted { $0.index < $1.index }
         guard chapterIndex >= 0, chapterIndex < chapters.count else { return "" }
@@ -107,8 +93,9 @@ enum LibraryService {
             return ""
         }
 
-        return try BookFileStore.readContentSlice(
+        return try loadLocalChapterText(
             bookId: book.id,
+            chapterIndex: chapterIndex,
             start: chapter.startOffset,
             length: chapter.length
         )
@@ -120,8 +107,11 @@ enum LibraryService {
         let text = try BookFileStore.readContent(bookId: bookId)
         guard let repaired = NovelTextDecoder.repairIfMojibake(text) else { return }
         let ranges = try await Task.detached(priority: .utility) {
-            try BookFileStore.writeContent(bookId: bookId, text: repaired)
-            return ChapterSplitter.split(repaired)
+            let decoded = NovelTextDecoder.decodeDetailed(Data(repaired.utf8))
+            try BookFileStore.writeContentData(bookId: bookId, data: decoded.utf8Data)
+            let ranges = ChapterSplitter.split(decoded.text)
+            try BookFileStore.writeChapters(bookId: bookId, text: decoded.text, ranges: ranges)
+            return ranges
         }.value
         for ch in book.chapters {
             context.delete(ch)
@@ -165,14 +155,5 @@ enum LibraryService {
         context.insert(mark)
         try context.save()
         return true
-    }
-
-    nonisolated private static func cleanTitle(_ name: String) -> String {
-        var t = name
-        if t.lowercased().hasSuffix(".txt") {
-            t = String(t.dropLast(4))
-        }
-        t = t.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.isEmpty ? "未命名" : t
     }
 }

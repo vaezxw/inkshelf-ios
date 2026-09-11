@@ -7,9 +7,11 @@ struct ShelfView: View {
     @Query(sort: \BookEntity.addedAt, order: .reverse) private var books: [BookEntity]
     @State private var query = ""
     @State private var importing = false
+    @State private var importProgress: ImportProgress?
     @State private var showImporter = false
     @State private var toast: String?
     @State private var path = NavigationPath()
+    @State private var readingBook: ReadingBookID?
 
     private var visible: [BookEntity] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -28,12 +30,14 @@ struct ShelfView: View {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 108), spacing: 14)], spacing: 16) {
                             ForEach(visible, id: \.id) { book in
-                                NavigationLink(value: book.id) {
+                                Button {
+                                    readingBook = ReadingBookID(id: book.id)
+                                } label: {
                                     BookCoverCell(book: book)
                                 }
                                 .buttonStyle(.plain)
                                 .contextMenu {
-                                    Button("打开阅读") { path.append(book.id) }
+                                    Button("打开阅读") { readingBook = ReadingBookID(id: book.id) }
                                     Button("详情") { path.append(DetailRoute(id: book.id)) }
                                     Button("删除", role: .destructive) {
                                         delete(book)
@@ -48,11 +52,6 @@ struct ShelfView: View {
             }
             .inkShelfScreenBackground()
             .navigationTitle("书架")
-            .navigationDestination(for: String.self) { bookId in
-                if let book = books.first(where: { $0.id == bookId }) {
-                    ReaderView(bookID: book.id)
-                }
-            }
             .navigationDestination(for: DetailRoute.self) { route in
                 if let book = books.first(where: { $0.id == route.id }) {
                     BookDetailView(bookID: book.id)
@@ -85,14 +84,16 @@ struct ShelfView: View {
                     ZStack {
                         Color.black.opacity(0.28).ignoresSafeArea()
                         VStack(spacing: 14) {
-                            ProgressView()
-                                .controlSize(.large)
-                            Text("正在导入并分章…")
+                            ProgressView(value: importProgress?.fraction ?? 0.05)
+                                .progressViewStyle(.linear)
+                                .frame(width: 180)
+                            Text(importProgress?.stage.rawValue ?? "正在导入…")
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(InkShelfColors.ink)
-                            Text("大文件可能需要十几秒，请稍候")
+                            Text("大文件在后台处理，界面可保持响应")
                                 .font(.caption)
                                 .foregroundStyle(InkShelfColors.inkMuted)
+                                .multilineTextAlignment(.center)
                         }
                         .padding(24)
                         .inkGlass(cornerRadius: 20)
@@ -108,6 +109,10 @@ struct ShelfView: View {
                 }
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.86), value: toast)
+            .fullScreenCover(item: $readingBook) { item in
+                ReaderView(bookID: item.id)
+                    .environmentObject(ReaderPrefs.shared)
+            }
         }
     }
 
@@ -143,8 +148,12 @@ struct ShelfView: View {
         case .success(let urls):
             guard let url = urls.first else { return }
             importing = true
+            importProgress = ImportProgress(stage: .reading, fraction: 0.02)
             Task {
-                defer { importing = false }
+                defer {
+                    importing = false
+                    importProgress = nil
+                }
                 do {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -156,9 +165,10 @@ struct ShelfView: View {
                         data: data,
                         displayName: name,
                         context: context
-                    )
+                    ) { progress in
+                        importProgress = progress
+                    }
                     flash("已导入「\(book.title)」· \(book.chapterCount) 章")
-                    path.append(book.id)
                 } catch {
                     flash("导入失败：\(error.localizedDescription)")
                 }

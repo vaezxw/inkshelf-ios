@@ -20,8 +20,10 @@ final class CoreLogicTests: XCTestCase {
 
     func testDecoderPrefersChinese() {
         let utf8 = "你好世界，这是一段中文小说正文。".data(using: .utf8)!
-        let decoded = NovelTextDecoder.decode(utf8)
-        XCTAssertTrue(decoded.contains("你好"))
+        let decoded = NovelTextDecoder.decodeDetailed(utf8)
+        XCTAssertTrue(decoded.text.contains("你好"))
+        XCTAssertFalse(decoded.utf8Data.isEmpty)
+        XCTAssertTrue(decoded.encodingName.contains("utf8"))
     }
 
     func testChapterSplitterFallbackChunksHugeText() {
@@ -43,6 +45,49 @@ final class CoreLogicTests: XCTestCase {
         )
         XCTAssertGreaterThan(pages.count, 1)
         XCTAssertFalse(pages.contains(where: \.isEmpty))
+    }
+
+    func testPaginatorRangesCoverFullText() {
+        let text = String(repeating: "分页范围覆盖全文。", count: 40)
+        let ranges = PagePaginator.paginateRanges(
+            text: text,
+            size: CGSize(width: 280, height: 360),
+            font: .systemFont(ofSize: 17),
+            lineHeightMultiple: 1.5
+        )
+        XCTAssertFalse(ranges.isEmpty)
+        XCTAssertEqual(ranges.first?.location, 0)
+        let covered = ranges.reduce(0) { $0 + $1.length }
+        XCTAssertEqual(covered, (text as NSString).length)
+    }
+
+    func testBookFileStoreChapterRoundTrip() throws {
+        let bookId = "test-\(UUID().uuidString)"
+        defer { BookFileStore.deleteBook(bookId: bookId) }
+        let text = "第一章\n内容甲\n\n第二章\n内容乙"
+        let ranges = ChapterSplitter.split(text)
+        try BookFileStore.writeContent(bookId: bookId, text: text)
+        try BookFileStore.writeChapters(bookId: bookId, text: text, ranges: ranges)
+        let first = try XCTUnwrap(BookFileStore.readChapter(bookId: bookId, index: 0))
+        XCTAssertFalse(first.isEmpty)
+    }
+
+    func testImportPipelinePreparesChapters() async throws {
+        let text = """
+        第一章 测试
+        正文一。
+
+        第二章 继续
+        正文二。
+        """
+        let data = Data(text.utf8)
+        let pipeline = ImportPipeline()
+        let prepared = try await pipeline.prepare(data: data, displayName: "单元测试.txt")
+        XCTAssertEqual(prepared.title, "单元测试")
+        XCTAssertGreaterThanOrEqual(prepared.chapters.count, 2)
+        let first = BookFileStore.readChapter(bookId: prepared.bookId, index: 0)
+        XCTAssertNotNil(first)
+        BookFileStore.deleteBook(bookId: prepared.bookId)
     }
 
     func testUnsupportedJsSearchUrl() {

@@ -1,57 +1,112 @@
 import UIKit
 
+struct PageRange: Sendable, Equatable {
+    var location: Int
+    var length: Int
+
+    var nsRange: NSRange { NSRange(location: location, length: length) }
+}
+
 enum PagePaginator {
-    /// Paginate chapter text to fit `size` using attributed-string height binary search.
-    static func paginate(text: String, size: CGSize, font: UIFont, lineHeightMultiple: CGFloat) -> [String] {
-        guard !text.isEmpty, size.width > 20, size.height > 40 else {
-            return text.isEmpty ? [""] : [text]
+    /// TextKit / CTFramesetter pagination returning UTF-16 ranges into `text`.
+    /// Safe to call off the main actor.
+    nonisolated static func paginateRanges(
+        text: String,
+        size: CGSize,
+        font: UIFont,
+        lineHeightMultiple: CGFloat
+    ) -> [PageRange] {
+        var pages: [PageRange] = []
+        enumerateRanges(text: text, size: size, font: font, lineHeightMultiple: lineHeightMultiple) { range in
+            pages.append(range)
         }
-        var remaining = text
-        var pages: [String] = []
+        return pages
+    }
+
+    /// Yields ranges as soon as each page is measured so the first page can paint early.
+    nonisolated static func paginateRangesStream(
+        text: String,
+        size: CGSize,
+        font: UIFont,
+        lineHeightMultiple: CGFloat
+    ) -> AsyncStream<PageRange> {
+        AsyncStream { continuation in
+            let task = Task.detached(priority: .userInitiated) {
+                enumerateRanges(text: text, size: size, font: font, lineHeightMultiple: lineHeightMultiple) { range in
+                    continuation.yield(range)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    nonisolated private static func enumerateRanges(
+        text: String,
+        size: CGSize,
+        font: UIFont,
+        lineHeightMultiple: CGFloat,
+        body: (PageRange) -> Void
+    ) {
+        guard !text.isEmpty, size.width > 20, size.height > 40 else {
+            let len = (text as NSString).length
+            body(PageRange(location: 0, length: len))
+            return
+        }
+
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineHeightMultiple = lineHeightMultiple
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .paragraphStyle: paragraph,
         ]
-        while !remaining.isEmpty {
-            if fits(remaining, size: size, attrs: attrs) {
-                pages.append(remaining)
-                break
+        let attributed = NSAttributedString(string: text, attributes: attrs)
+        let framesetter = CTFramesetterCreateWithAttributedString(attributed as CFAttributedString)
+        let total = attributed.length
+        var location = 0
+        let path = CGPath(rect: CGRect(origin: .zero, size: size), transform: nil)
+        var emitted = false
+
+        while location < total {
+            let frame = CTFramesetterCreateFrame(
+                framesetter,
+                CFRange(location: location, length: 0),
+                path,
+                nil
+            )
+            let visible = CTFrameGetVisibleStringRange(frame)
+            var len = visible.length
+            if len <= 0 {
+                len = min(1, total - location)
             }
-            var low = 1
-            var high = remaining.count
-            var best = 1
-            while low <= high {
-                let mid = (low + high) / 2
-                let prefix = String(remaining.prefix(mid))
-                if fits(prefix, size: size, attrs: attrs) {
-                    best = mid
-                    low = mid + 1
-                } else {
-                    high = mid - 1
-                }
-            }
-            var cut = best
-            let window = remaining.prefix(best)
-            if let breakIdx = window.lastIndex(where: { $0 == "\n" || $0 == " " || $0 == "　" }),
-               remaining.distance(from: remaining.startIndex, to: breakIdx) > best / 3 {
-                cut = remaining.distance(from: remaining.startIndex, to: breakIdx) + 1
-            }
-            cut = max(1, min(cut, remaining.count))
-            pages.append(String(remaining.prefix(cut)))
-            remaining = String(remaining.dropFirst(cut))
+            body(PageRange(location: location, length: len))
+            emitted = true
+            location += len
         }
-        return pages.isEmpty ? [""] : pages
+
+        if !emitted {
+            body(PageRange(location: 0, length: total))
+        }
     }
 
-    private static func fits(_ text: String, size: CGSize, attrs: [NSAttributedString.Key: Any]) -> Bool {
-        let rect = (text as NSString).boundingRect(
-            with: CGSize(width: size.width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: attrs,
-            context: nil
-        )
-        return ceil(rect.height) <= size.height + 0.5
+    /// Compatibility helper used by tests / callers that still want page strings.
+    nonisolated static func paginate(
+        text: String,
+        size: CGSize,
+        font: UIFont,
+        lineHeightMultiple: CGFloat
+    ) -> [String] {
+        let ns = text as NSString
+        let ranges = paginateRanges(text: text, size: size, font: font, lineHeightMultiple: lineHeightMultiple)
+        return ranges.map { ns.substring(with: $0.nsRange) }
+    }
+
+    nonisolated static func substring(text: String, range: PageRange) -> String {
+        let ns = text as NSString
+        let start = min(max(range.location, 0), ns.length)
+        let len = min(max(range.length, 0), ns.length - start)
+        return ns.substring(with: NSRange(location: start, length: len))
     }
 }

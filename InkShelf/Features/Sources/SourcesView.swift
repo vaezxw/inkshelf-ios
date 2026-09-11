@@ -18,10 +18,10 @@ struct SourcesView: View {
     @State private var exportURL: URL?
     @State private var showShare = false
     @State private var addingId: String?
-    @State private var path = NavigationPath()
+    @State private var readingBook: ReadingBookID?
 
     var body: some View {
-        NavigationStack(path: $path) {
+        NavigationStack {
             VStack(spacing: 0) {
                 Picker("", selection: $tab) {
                     Text("搜索").tag(0)
@@ -42,8 +42,9 @@ struct SourcesView: View {
             }
             .inkShelfScreenBackground()
             .navigationTitle("书源")
-            .navigationDestination(for: String.self) { bookId in
-                ReaderView(bookID: bookId)
+            .fullScreenCover(item: $readingBook) { item in
+                ReaderView(bookID: item.id)
+                    .environmentObject(ReaderPrefs.shared)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -252,7 +253,7 @@ struct SourcesView: View {
         do {
             let book = try await SourceRepository.addRemoteBook(hit: hit, source: source, context: context)
             flash("已加入「\(book.title)」")
-            path.append(book.id)
+            readingBook = ReadingBookID(id: book.id)
         } catch {
             flash("加入失败：\(error.localizedDescription)")
         }

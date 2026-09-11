@@ -2,6 +2,10 @@ import SwiftUI
 import SwiftData
 import UIKit
 
+struct ReadingBookID: Identifiable, Hashable {
+    var id: String
+}
+
 struct ReaderView: View {
     let bookID: String
 
@@ -19,10 +23,11 @@ struct ReaderView: View {
     @State private var showTOC = false
     @State private var showPrefs = false
     @State private var pageIndex = 0
-    @State private var pages: [String] = [""]
+    @State private var pageStrings: [String] = [""]
     @State private var toast: String?
     @State private var autoTask: Task<Void, Never>?
-    @State private var contentSize: CGSize = .zero
+    @State private var pageSize: CGSize = CGSize(width: 320, height: 480)
+    @State private var paginateGeneration = 0
 
     private var book: BookEntity? { books.first { $0.id == bookID } }
     private var chapters: [ChapterEntity] {
@@ -30,67 +35,216 @@ struct ReaderView: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                palette.bg.ignoresSafeArea()
-                if loading && chapterText.isEmpty {
-                    ProgressView("加载中…")
-                } else if let errorMessage, chapterText.isEmpty {
-                    ContentUnavailableView {
-                        Label("无法打开", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(errorMessage)
-                    } actions: {
-                        Button("重试") {
-                            Task { await loadChapter(resetPage: true) }
-                        }
-                        .tint(InkShelfColors.lamp)
-                        .inkGlassProminentButton()
-                    }
-                } else {
-                    contentArea(size: geo.size, safeTop: geo.safeAreaInsets.top, safeBottom: geo.safeAreaInsets.bottom)
+        ZStack {
+            palette.bg.ignoresSafeArea()
+
+            contentBody
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if showChrome {
+                VStack(spacing: 0) {
+                    topChrome
+                    Spacer(minLength: 0)
+                    bottomChrome
                 }
-                if showChrome {
-                    chromeOverlay(safeTop: geo.safeAreaInsets.top, safeBottom: geo.safeAreaInsets.bottom)
-                }
-                if let toast {
-                    VStack {
-                        Spacer()
-                        GlassToast(message: toast)
-                            .padding(.bottom, max(geo.safeAreaInsets.bottom, 12) + 72)
-                    }
+                .transition(.opacity)
+            }
+
+            if let toast {
+                VStack {
+                    Spacer()
+                    GlassToast(message: toast)
+                        .padding(.bottom, showChrome ? 120 : 36)
                 }
             }
-            .onAppear {
-                guard let book else { return }
-                chapterIndex = min(max(book.lastChapterIndex, 0), max(chapters.count - 1, 0))
-                applyBrightness()
-                Task { await loadChapter(resetPage: true) }
-            }
-            .onDisappear {
-                stopAutoRead()
-                speech.stop()
-                ScreenBrightness.restoreIfNeeded()
+        }
+        .statusBarHidden(!showChrome)
+        .onAppear {
+            guard let book else { return }
+            chapterIndex = min(max(book.lastChapterIndex, 0), max(chapters.count - 1, 0))
+            applyBrightness()
+            Task { await loadChapter(resetPage: true) }
+        }
+        .onDisappear {
+            stopAutoRead()
+            speech.stop()
+            ScreenBrightness.restoreIfNeeded()
+            saveProgress()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .readerPageDidChange)) { note in
+            if let idx = note.object as? Int {
+                pageIndex = idx
                 saveProgress()
             }
-            .onChange(of: prefs.fontSize) { _, _ in rebuildPages(size: contentSize) }
-            .onChange(of: prefs.lineHeight) { _, _ in rebuildPages(size: contentSize) }
-            .onChange(of: prefs.themeMode) { _, _ in }
-            .onChange(of: prefs.followSystemBrightness) { _, _ in applyBrightness() }
-            .onChange(of: prefs.brightness) { _, _ in applyBrightness() }
-            .onChange(of: prefs.autoReadEnabled) { _, enabled in
-                if enabled { startAutoRead() } else { stopAutoRead() }
-            }
-            .onChange(of: prefs.autoReadSpeed) { _, _ in
-                if prefs.autoReadEnabled { startAutoRead() }
-            }
-            .sheet(isPresented: $showTOC) { tocSheet }
-            .sheet(isPresented: $showPrefs) { ReaderPrefsSheet() }
-            .toolbar(.hidden, for: .navigationBar)
-            .toolbar(.hidden, for: .tabBar)
-            .statusBarHidden(!showChrome)
         }
-        .ignoresSafeArea(edges: showChrome ? [] : .all)
+        .onChange(of: prefs.fontSize) { _, _ in Task { await rebuildPagesIncremental(resetPage: false) } }
+        .onChange(of: prefs.lineHeight) { _, _ in Task { await rebuildPagesIncremental(resetPage: false) } }
+        .onChange(of: prefs.autoReadEnabled) { _, enabled in
+            if enabled { startAutoRead() } else { stopAutoRead() }
+        }
+        .onChange(of: prefs.autoReadSpeed) { _, _ in
+            if prefs.autoReadEnabled { startAutoRead() }
+        }
+        .onChange(of: prefs.followSystemBrightness) { _, _ in applyBrightness() }
+        .onChange(of: prefs.brightness) { _, _ in applyBrightness() }
+        .sheet(isPresented: $showTOC) { tocSheet }
+        .sheet(isPresented: $showPrefs) { ReaderPrefsSheet() }
+    }
+
+    @ViewBuilder
+    private var contentBody: some View {
+        if loading && chapterText.isEmpty {
+            ProgressView("加载中…")
+        } else if let errorMessage, chapterText.isEmpty {
+            ContentUnavailableView {
+                Label("无法打开", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(errorMessage)
+            } actions: {
+                Button("重试") { Task { await loadChapter(resetPage: true) } }
+                    .tint(InkShelfColors.lamp)
+                    .inkGlassProminentButton()
+            }
+        } else {
+            GeometryReader { geo in
+                let size = CGSize(
+                    width: max(geo.size.width - 32, 40),
+                    height: max(geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom - 24, 80)
+                )
+                Group {
+                    switch prefs.readMode {
+                    case .pageFlip:
+                        ReaderPageHost(
+                            pages: pageStrings,
+                            pageIndex: $pageIndex,
+                            fontSize: prefs.fontSize,
+                            lineHeight: prefs.lineHeight,
+                            textColor: UIColor(palette.fg),
+                            backgroundColor: UIColor(palette.bg),
+                            onToggleChrome: {
+                                withAnimation(.easeInOut(duration: 0.2)) { showChrome.toggle() }
+                            },
+                            onTurnPastEnd: { goChapter(chapterIndex + 1) },
+                            onTurnPastStart: { goChapter(chapterIndex - 1) }
+                        )
+                    case .verticalScroll:
+                        ReaderScrollHost(
+                            text: chapterText,
+                            fontSize: prefs.fontSize,
+                            lineHeight: prefs.lineHeight,
+                            textColor: UIColor(palette.fg),
+                            backgroundColor: UIColor(palette.bg),
+                            onToggleChrome: {
+                                withAnimation(.easeInOut(duration: 0.2)) { showChrome.toggle() }
+                            }
+                        )
+                    }
+                }
+                .onAppear {
+                    if abs(pageSize.width - size.width) > 1 || abs(pageSize.height - size.height) > 1 {
+                        pageSize = size
+                        Task { await rebuildPagesIncremental(resetPage: false) }
+                    }
+                }
+                .onChange(of: geo.size) { _, _ in
+                    let next = CGSize(
+                        width: max(geo.size.width - 32, 40),
+                        height: max(geo.size.height - geo.safeAreaInsets.top - geo.safeAreaInsets.bottom - 24, 80)
+                    )
+                    guard abs(pageSize.width - next.width) > 1 || abs(pageSize.height - next.height) > 1 else { return }
+                    pageSize = next
+                    Task { await rebuildPagesIncremental(resetPage: false) }
+                }
+            }
+        }
+    }
+
+    private var topChrome: some View {
+        HStack(spacing: 12) {
+            Button { dismiss() } label: {
+                Image(systemName: "chevron.left")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(book?.title ?? "")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(palette.fg)
+                    .lineLimit(1)
+                Text(chapters.indices.contains(chapterIndex) ? chapters[chapterIndex].title : "")
+                    .font(.caption2)
+                    .foregroundStyle(palette.muted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Text(pageLabel)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(palette.muted)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .background(.ultraThinMaterial)
+    }
+
+    private var bottomChrome: some View {
+        VStack(spacing: 8) {
+            HStack {
+                chromeButton("chevron.left.2", "上一章", disabled: chapterIndex <= 0) {
+                    goChapter(chapterIndex - 1)
+                }
+                chromeButton("list.bullet", "目录") { showTOC = true }
+                chromeButton("chevron.right.2", "下一章", disabled: chapterIndex >= chapters.count - 1) {
+                    goChapter(chapterIndex + 1)
+                }
+            }
+            HStack {
+                chromeButton(isBookmarked ? "bookmark.fill" : "bookmark", "书签") { toggleBookmark() }
+                chromeButton(speech.isSpeaking ? "stop.fill" : "speaker.wave.2.fill", "听书") {
+                    if speech.isSpeaking {
+                        speech.stop()
+                    } else {
+                        prefs.autoReadEnabled = false
+                        speech.speak(chapterText)
+                    }
+                }
+                chromeButton("textformat.size", "排版") { showPrefs = true }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(.ultraThinMaterial)
+    }
+
+    private var pageLabel: String {
+        if prefs.readMode == .pageFlip, pageStrings.count > 0 {
+            return "\(pageIndex + 1)/\(pageStrings.count) · \(chapterIndex + 1)/\(max(chapters.count, 1))"
+        }
+        return "\(chapterIndex + 1)/\(max(chapters.count, 1))"
+    }
+
+    private func chromeButton(
+        _ systemName: String,
+        _ title: String,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemName)
+                    .font(.body.weight(.medium))
+                Text(title).font(.caption2)
+            }
+            .foregroundStyle(palette.fg)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+        }
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
+        .buttonStyle(.plain)
     }
 
     private var palette: (bg: Color, fg: Color, muted: Color) {
@@ -104,214 +258,6 @@ struct ReaderView: View {
         }
     }
 
-    @ViewBuilder
-    private func contentArea(size: CGSize, safeTop: CGFloat, safeBottom: CGFloat) -> some View {
-        let topPad: CGFloat = showChrome ? max(safeTop, 12) + 56 : max(safeTop, 12) + 8
-        let bottomPad: CGFloat = showChrome ? max(safeBottom, 8) + 108 : max(safeBottom, 8) + 16
-        let pad = EdgeInsets(top: topPad, leading: 20, bottom: bottomPad, trailing: 20)
-        let pageSize = CGSize(
-            width: max(size.width - pad.leading - pad.trailing, 40),
-            height: max(size.height - pad.top - pad.bottom, 80)
-        )
-        Group {
-            switch prefs.readMode {
-            case .pageFlip:
-                pageFlipView(pageSize: pageSize)
-            case .verticalScroll:
-                verticalScrollView
-            }
-        }
-        .padding(pad)
-        .foregroundStyle(palette.fg)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) { showChrome.toggle() }
-        }
-        .gesture(chapterSwipe)
-        .background(
-            GeometryReader { g in
-                Color.clear.onAppear {
-                    contentSize = pageSize
-                    rebuildPages(size: pageSize)
-                }
-                .onChange(of: g.size) { _, _ in
-                    contentSize = pageSize
-                    rebuildPages(size: pageSize)
-                }
-            }
-        )
-    }
-
-    private var chapterSwipe: some Gesture {
-        DragGesture(minimumDistance: 40)
-            .onEnded { value in
-                let dx = value.translation.width
-                let dy = value.translation.height
-                switch prefs.readMode {
-                case .pageFlip:
-                    if abs(dx) > abs(dy) * 1.2 {
-                        if dx < -60 { nextPageOrChapter() }
-                        else if dx > 60 { prevPageOrChapter() }
-                    }
-                case .verticalScroll:
-                    if abs(dx) > abs(dy) * 1.4 {
-                        if dx < -60 { goChapter(chapterIndex + 1) }
-                        else if dx > 60 { goChapter(chapterIndex - 1) }
-                    }
-                }
-            }
-    }
-
-    private func pageFlipView(pageSize: CGSize) -> some View {
-        TabView(selection: $pageIndex) {
-            ForEach(Array(pages.enumerated()), id: \.offset) { idx, page in
-                ScrollView {
-                    Text(page)
-                        .font(.system(size: prefs.fontSize))
-                        .lineSpacing(max(0, prefs.fontSize * (prefs.lineHeight - 1)))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .tag(idx)
-            }
-        }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .onChange(of: pageIndex) { old, new in
-            if new == pages.count - 1, old == pages.count - 1 {
-                // stay
-            }
-            if new >= pages.count - 1 && old == pages.count - 1 {
-                // noop
-            }
-            // Edge chapter change when swiping past last/first via chrome buttons;
-            // TabView won't overscroll — use toolbar / edge taps.
-        }
-        .overlay {
-            HStack {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .frame(width: 40)
-                    .onTapGesture { prevPageOrChapter() }
-                Spacer()
-                Color.clear
-                    .contentShape(Rectangle())
-                    .frame(width: 40)
-                    .onTapGesture { nextPageOrChapter() }
-            }
-            .allowsHitTesting(showChrome == false)
-        }
-    }
-
-    private var verticalScrollView: some View {
-        ScrollView {
-            Text(chapterText)
-                .font(.system(size: prefs.fontSize))
-                .lineSpacing(max(0, prefs.fontSize * (prefs.lineHeight - 1)))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func chromeOverlay(safeTop: CGFloat, safeBottom: CGFloat) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 36, height: 36)
-                }
-                .inkGlassCapsule(interactive: true)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(book?.title ?? "")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(palette.fg)
-                        .lineLimit(1)
-                    Text(chapters.indices.contains(chapterIndex) ? chapters[chapterIndex].title : "")
-                        .font(.caption2)
-                        .foregroundStyle(palette.muted)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Text("\(chapterIndex + 1)/\(max(chapters.count, 1))")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(palette.muted)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .inkGlassCapsule()
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, max(safeTop, 12) + 6)
-            .padding(.bottom, 10)
-            .frame(maxWidth: .infinity)
-            .background(.ultraThinMaterial)
-
-            Spacer()
-
-            VStack(spacing: 10) {
-                HStack(spacing: 0) {
-                    chromeToolButton("chevron.left.2", title: "上一章", disabled: chapterIndex <= 0) {
-                        goChapter(chapterIndex - 1)
-                    }
-                    chromeToolButton("list.bullet", title: "目录") { showTOC = true }
-                    chromeToolButton("chevron.right.2", title: "下一章", disabled: chapterIndex >= chapters.count - 1) {
-                        goChapter(chapterIndex + 1)
-                    }
-                }
-
-                HStack(spacing: 0) {
-                    chromeToolButton(isBookmarked ? "bookmark.fill" : "bookmark", title: "书签") {
-                        toggleBookmark()
-                    }
-                    chromeToolButton(speech.isSpeaking ? "stop.fill" : "speaker.wave.2.fill", title: "听书") {
-                        if speech.isSpeaking {
-                            speech.stop()
-                        } else {
-                            prefs.autoReadEnabled = false
-                            speech.speak(chapterText)
-                        }
-                    }
-                    chromeToolButton(
-                        prefs.autoReadEnabled ? "forward.fill" : "forward",
-                        title: "自动",
-                        tint: prefs.autoReadEnabled ? InkShelfColors.lamp : nil
-                    ) {
-                        prefs.autoReadEnabled.toggle()
-                    }
-                    chromeToolButton("textformat.size", title: "排版") { showPrefs = true }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
-            .padding(.bottom, max(safeBottom, 10) + 8)
-            .frame(maxWidth: .infinity)
-            .background(.ultraThinMaterial)
-        }
-    }
-
-    private func chromeToolButton(
-        _ systemName: String,
-        title: String,
-        disabled: Bool = false,
-        tint: Color? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: systemName)
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(tint ?? palette.fg)
-                    .frame(height: 22)
-                Text(title)
-                    .font(.caption2)
-                    .foregroundStyle(palette.muted)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
-        }
-        .disabled(disabled)
-        .opacity(disabled ? 0.35 : 1)
-        .buttonStyle(.plain)
-    }
-
     private var tocSheet: some View {
         NavigationStack {
             List {
@@ -322,12 +268,10 @@ struct ReaderView: View {
                             goChapter(ch.index)
                         } label: {
                             HStack {
-                                Text(ch.title)
-                                    .foregroundStyle(palette.fg)
+                                Text(ch.title).foregroundStyle(palette.fg)
                                 Spacer()
                                 if ch.index == chapterIndex {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(InkShelfColors.lamp)
+                                    Image(systemName: "checkmark").foregroundStyle(InkShelfColors.lamp)
                                 }
                             }
                         }
@@ -342,9 +286,7 @@ struct ReaderView: View {
                             } label: {
                                 VStack(alignment: .leading) {
                                     Text(bm.title)
-                                    Text("第 \(bm.chapterIndex + 1) 章")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    Text("第 \(bm.chapterIndex + 1) 章").font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                         }
@@ -370,39 +312,92 @@ struct ReaderView: View {
         errorMessage = nil
         defer { loading = false }
         do {
+            let text: String
             if book.isRemote {
-                chapterText = try await SourceRepository.loadRemoteChapterText(
+                text = try await SourceRepository.loadRemoteChapterText(
                     book: book,
                     chapterIndex: chapterIndex,
                     context: context
                 )
             } else {
-                chapterText = try LibraryService.loadChapterText(book: book, chapterIndex: chapterIndex)
+                let chaptersSorted = chapters
+                guard chapterIndex >= 0, chapterIndex < chaptersSorted.count else {
+                    text = ""
+                    chapterText = text
+                    return
+                }
+                let ch = chaptersSorted[chapterIndex]
+                let bookId = book.id
+                let start = ch.startOffset
+                let length = ch.length
+                let idx = chapterIndex
+                text = try await Task.detached(priority: .userInitiated) {
+                    try LibraryService.loadLocalChapterText(
+                        bookId: bookId,
+                        chapterIndex: idx,
+                        start: start,
+                        length: length
+                    )
+                }.value
             }
-            if chapterText.isEmpty && book.isRemote {
+            chapterText = text
+            if text.isEmpty && book.isRemote {
                 errorMessage = "章节内容为空（请换书源，或该站正文规则含 JS）"
             }
-            rebuildPages(size: contentSize)
-            if resetPage { pageIndex = 0 }
+            await rebuildPagesIncremental(resetPage: resetPage)
             saveProgress()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func rebuildPages(size: CGSize) {
-        guard size.width > 20, size.height > 40 else {
-            pages = [chapterText]
+    private func rebuildPagesIncremental(resetPage: Bool) async {
+        guard prefs.readMode == .pageFlip else {
+            pageStrings = [chapterText]
             return
         }
-        let font = UIFont.systemFont(ofSize: prefs.fontSize)
-        pages = PagePaginator.paginate(
-            text: chapterText,
-            size: size,
-            font: font,
-            lineHeightMultiple: prefs.lineHeight
-        )
-        pageIndex = min(pageIndex, max(pages.count - 1, 0))
+        paginateGeneration += 1
+        let gen = paginateGeneration
+        let text = chapterText
+        let size = pageSize
+        let fontSize = prefs.fontSize
+        let lineHeight = prefs.lineHeight
+        guard size.width > 20, size.height > 40 else {
+            pageStrings = text.isEmpty ? [""] : [text]
+            return
+        }
+
+        if resetPage {
+            pageIndex = 0
+            pageStrings = [""]
+        }
+
+        let stream = AsyncStream<[String]> { continuation in
+            Task.detached(priority: .userInitiated) {
+                let ns = text as NSString
+                var ranges: [PageRange] = []
+                for await range in PagePaginator.paginateRangesStream(
+                    text: text,
+                    size: size,
+                    font: UIFont.systemFont(ofSize: fontSize),
+                    lineHeightMultiple: lineHeight
+                ) {
+                    ranges.append(range)
+                    if ranges.count == 1 || ranges.count % 8 == 0 {
+                        continuation.yield(ranges.map { ns.substring(with: $0.nsRange) })
+                    }
+                }
+                let finalPages = ranges.map { ns.substring(with: $0.nsRange) }
+                continuation.yield(finalPages.isEmpty ? [""] : finalPages)
+                continuation.finish()
+            }
+        }
+
+        for await pages in stream {
+            guard gen == paginateGeneration else { return }
+            pageStrings = pages
+            pageIndex = min(pageIndex, max(pages.count - 1, 0))
+        }
     }
 
     private func goChapter(_ index: Int) {
@@ -413,18 +408,10 @@ struct ReaderView: View {
     }
 
     private func nextPageOrChapter() {
-        if pageIndex < pages.count - 1 {
+        if pageIndex < pageStrings.count - 1 {
             pageIndex += 1
         } else {
             goChapter(chapterIndex + 1)
-        }
-    }
-
-    private func prevPageOrChapter() {
-        if pageIndex > 0 {
-            pageIndex -= 1
-        } else {
-            goChapter(chapterIndex - 1)
         }
     }
 
