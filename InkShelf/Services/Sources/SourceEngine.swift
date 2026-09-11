@@ -49,11 +49,28 @@ enum SourceEngine {
         return URLSession(configuration: cfg)
     }()
 
+    /// Parse Legado JSON on the calling isolation; returns a value-typed map used only locally.
+    private static func parseRawSource(_ json: String) throws -> [String: Any] {
+        guard let data = json.data(using: .utf8),
+              let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SourceError.format("书源数据损坏")
+        }
+        return obj
+    }
+
     static func isUnsupportedSearchUrl(_ searchUrl: String?) -> Bool {
         guard let searchUrl else { return true }
         let t = searchUrl.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if t.isEmpty { return true }
         return t.contains("@js") || t.contains("<js>") || t.contains("{{url()") || t.contains("java.")
+    }
+
+    static func isUnsupportedSearchJSON(_ json: String) -> Bool {
+        guard let data = json.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return true
+        }
+        return isUnsupportedSearchUrl(raw["searchUrl"] as? String)
     }
 
     static func parseSearchTemplate(base: String, template: String, key: String, page: Int) -> SearchRequestSpec {
@@ -99,7 +116,8 @@ enum SourceEngine {
         )
     }
 
-    static func search(rawSource: [String: Any], sourceId: String, sourceName: String, keyword: String, page: Int = 1) async throws -> [SearchBookHit] {
+    static func search(rawSourceJSON: String, sourceId: String, sourceName: String, keyword: String, page: Int = 1) async throws -> [SearchBookHit] {
+        let rawSource = try parseRawSource(rawSourceJSON)
         let searchUrl = rawSource["searchUrl"] as? String
         guard let searchUrl, !searchUrl.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw SourceError.unsupported("书源未配置 searchUrl")
@@ -154,7 +172,8 @@ enum SourceEngine {
         }
     }
 
-    static func fetchToc(rawSource: [String: Any], bookUrl: String) async throws -> [RemoteChapter] {
+    static func fetchToc(rawSourceJSON: String, bookUrl: String) async throws -> [RemoteChapter] {
+        let rawSource = try parseRawSource(rawSourceJSON)
         var tocUrl = bookUrl
         if let info = rawSource["ruleBookInfo"] as? [String: Any],
            let nextRule = info["tocUrl"] as? String,
@@ -195,7 +214,8 @@ enum SourceEngine {
         }
     }
 
-    static func fetchContent(rawSource: [String: Any], chapterUrl: String) async throws -> String {
+    static func fetchContent(rawSourceJSON: String, chapterUrl: String) async throws -> String {
+        let rawSource = try parseRawSource(rawSourceJSON)
         guard let rule = rawSource["ruleContent"] as? [String: Any] else {
             throw SourceError.unsupported("书源未配置 ruleContent")
         }

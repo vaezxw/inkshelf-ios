@@ -92,8 +92,10 @@ enum SourceRepository {
         source: BookSourceEntity,
         context: ModelContext
     ) async throws -> BookEntity {
-        guard let raw = rawMap(from: source) else { throw SourceError.format("书源数据损坏") }
-        let chapters = try await SourceEngine.fetchToc(rawSource: raw, bookUrl: hit.bookUrl)
+        guard !source.legadoRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw SourceError.format("书源数据损坏")
+        }
+        let chapters = try await SourceEngine.fetchToc(rawSourceJSON: source.legadoRaw, bookUrl: hit.bookUrl)
         guard !chapters.isEmpty else { throw SourceError.network("目录为空") }
         let bookId = UUID().uuidString
         try BookFileStore.writeContent(bookId: bookId, text: "")
@@ -126,10 +128,10 @@ enum SourceRepository {
               let bookUrl = book.bookUrl else { return }
         let sources = try context.fetch(FetchDescriptor<BookSourceEntity>())
         guard let source = sources.first(where: { $0.id == sourceId }),
-              let raw = rawMap(from: source) else {
+              !source.legadoRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SourceError.format("找不到原书源")
         }
-        let chapters = try await SourceEngine.fetchToc(rawSource: raw, bookUrl: bookUrl)
+        let chapters = try await SourceEngine.fetchToc(rawSourceJSON: source.legadoRaw, bookUrl: bookUrl)
         for ch in book.chapters { context.delete(ch) }
         book.chapters.removeAll()
         for (i, ch) in chapters.enumerated() {
@@ -159,10 +161,10 @@ enum SourceRepository {
         }
         let sources = try context.fetch(FetchDescriptor<BookSourceEntity>())
         guard let source = sources.first(where: { $0.id == sourceId }),
-              let raw = rawMap(from: source) else {
+              !source.legadoRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SourceError.format("找不到原书源")
         }
-        let text = try await SourceEngine.fetchContent(rawSource: raw, chapterUrl: url)
+        let text = try await SourceEngine.fetchContent(rawSourceJSON: source.legadoRaw, chapterUrl: url)
         try BookFileStore.writeCache(bookId: book.id, chapterIndex: chapterIndex, text: text)
         return text
     }

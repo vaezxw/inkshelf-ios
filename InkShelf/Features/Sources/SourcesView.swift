@@ -221,14 +221,10 @@ struct SourcesView: View {
             await withTaskGroup(of: [SearchBookHit].self) { group in
                 for job in batch {
                     group.addTask {
-                        guard let data = job.legadoRaw.data(using: .utf8),
-                              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                            return []
-                        }
-                        if SourceEngine.isUnsupportedSearchUrl(raw["searchUrl"] as? String) { return [] }
+                        if SourceEngine.isUnsupportedSearchJSON(job.legadoRaw) { return [] }
                         do {
                             return try await SourceEngine.search(
-                                rawSource: raw,
+                                rawSourceJSON: job.legadoRaw,
                                 sourceId: job.id,
                                 sourceName: job.name,
                                 keyword: key
