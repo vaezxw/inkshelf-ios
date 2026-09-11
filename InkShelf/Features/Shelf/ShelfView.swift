@@ -80,6 +80,26 @@ struct ShelfView: View {
             ) { result in
                 handleImport(result)
             }
+            .overlay {
+                if importing {
+                    ZStack {
+                        Color.black.opacity(0.28).ignoresSafeArea()
+                        VStack(spacing: 14) {
+                            ProgressView()
+                                .controlSize(.large)
+                            Text("正在导入并分章…")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(InkShelfColors.ink)
+                            Text("大文件可能需要十几秒，请稍候")
+                                .font(.caption)
+                                .foregroundStyle(InkShelfColors.inkMuted)
+                        }
+                        .padding(24)
+                        .inkGlass(cornerRadius: 20)
+                    }
+                    .allowsHitTesting(true)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if let toast {
                     GlassToast(message: toast)
@@ -128,9 +148,15 @@ struct ShelfView: View {
                 do {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    let data = try Data(contentsOf: url)
+                    let data = try await Task.detached(priority: .userInitiated) {
+                        try Data(contentsOf: url)
+                    }.value
                     let name = url.deletingPathExtension().lastPathComponent
-                    let book = try LibraryService.importTxt(data: data, displayName: name, context: context)
+                    let book = try await LibraryService.importTxt(
+                        data: data,
+                        displayName: name,
+                        context: context
+                    )
                     flash("已导入「\(book.title)」· \(book.chapterCount) 章")
                     path.append(book.id)
                 } catch {

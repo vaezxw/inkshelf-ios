@@ -2,30 +2,58 @@ import Foundation
 import SwiftData
 import UniformTypeIdentifiers
 
+struct PreparedLocalBook: Sendable {
+    var bookId: String
+    var title: String
+    var contentRelativePath: String
+    var chapters: [PreparedChapter]
+}
+
+struct PreparedChapter: Sendable {
+    var index: Int
+    var title: String
+    var startOffset: Int
+    var length: Int
+}
+
 @MainActor
 enum LibraryService {
-    static func importTxt(
-        data: Data,
-        displayName: String,
-        context: ModelContext
-    ) throws -> BookEntity {
+    /// Heavy decode / split / disk write — call off the main actor.
+    nonisolated static func prepareLocalImport(data: Data, displayName: String) throws -> PreparedLocalBook {
         let text = NovelTextDecoder.decode(data)
         let bookId = UUID().uuidString
         try BookFileStore.writeContent(bookId: bookId, text: text)
         let ranges = ChapterSplitter.split(text)
-        let book = BookEntity(
-            id: bookId,
-            title: cleanTitle(displayName),
-            origin: .local,
-            contentRelativePath: BookFileStore.relativeContentPath(bookId: bookId),
-            chapterCount: ranges.count
-        )
-        for (i, range) in ranges.enumerated() {
-            let chapter = ChapterEntity(
+        let chapters = ranges.enumerated().map { i, range in
+            PreparedChapter(
                 index: i,
                 title: range.title,
                 startOffset: range.start,
-                length: range.length,
+                length: range.length
+            )
+        }
+        return PreparedLocalBook(
+            bookId: bookId,
+            title: cleanTitle(displayName),
+            contentRelativePath: BookFileStore.relativeContentPath(bookId: bookId),
+            chapters: chapters
+        )
+    }
+
+    static func commitLocalImport(_ prepared: PreparedLocalBook, context: ModelContext) throws -> BookEntity {
+        let book = BookEntity(
+            id: prepared.bookId,
+            title: prepared.title,
+            origin: .local,
+            contentRelativePath: prepared.contentRelativePath,
+            chapterCount: prepared.chapters.count
+        )
+        for item in prepared.chapters {
+            let chapter = ChapterEntity(
+                index: item.index,
+                title: item.title,
+                startOffset: item.startOffset,
+                length: item.length,
                 book: book
             )
             book.chapters.append(chapter)
@@ -34,6 +62,17 @@ enum LibraryService {
         context.insert(book)
         try context.save()
         return book
+    }
+
+    static func importTxt(
+        data: Data,
+        displayName: String,
+        context: ModelContext
+    ) async throws -> BookEntity {
+        let prepared = try await Task.detached(priority: .userInitiated) {
+            try prepareLocalImport(data: data, displayName: displayName)
+        }.value
+        return try commitLocalImport(prepared, context: context)
     }
 
     static func deleteBook(_ book: BookEntity, context: ModelContext) throws {
@@ -75,12 +114,15 @@ enum LibraryService {
         )
     }
 
-    static func repairEncodingIfNeeded(book: BookEntity, context: ModelContext) throws {
+    static func repairEncodingIfNeeded(book: BookEntity, context: ModelContext) async throws {
         guard !book.isRemote else { return }
-        let text = try BookFileStore.readContent(bookId: book.id)
+        let bookId = book.id
+        let text = try BookFileStore.readContent(bookId: bookId)
         guard let repaired = NovelTextDecoder.repairIfMojibake(text) else { return }
-        try BookFileStore.writeContent(bookId: book.id, text: repaired)
-        let ranges = ChapterSplitter.split(repaired)
+        let ranges = try await Task.detached(priority: .utility) {
+            try BookFileStore.writeContent(bookId: bookId, text: repaired)
+            return ChapterSplitter.split(repaired)
+        }.value
         for ch in book.chapters {
             context.delete(ch)
         }
@@ -125,7 +167,7 @@ enum LibraryService {
         return true
     }
 
-    private static func cleanTitle(_ name: String) -> String {
+    nonisolated private static func cleanTitle(_ name: String) -> String {
         var t = name
         if t.lowercased().hasSuffix(".txt") {
             t = String(t.dropLast(4))

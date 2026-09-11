@@ -95,7 +95,7 @@ struct SettingsView: View {
         var n = 0
         for book in books where !book.isRemote {
             do {
-                try LibraryService.repairEncodingIfNeeded(book: book, context: context)
+                try await LibraryService.repairEncodingIfNeeded(book: book, context: context)
                 n += 1
             } catch {
                 // continue

@@ -24,6 +24,15 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertTrue(decoded.contains("你好"))
     }
 
+    func testChapterSplitterFallbackChunksHugeText() {
+        let paragraph = String(repeating: "这是一段没有章节标题的长文。", count: 80)
+        let text = Array(repeating: paragraph, count: 20).joined(separator: "\n")
+        let parts = ChapterSplitter.split(text)
+        XCTAssertGreaterThan(parts.count, 1)
+        XCTAssertEqual(parts.first?.start, 0)
+        XCTAssertEqual(parts.last?.end, (text as NSString).length)
+    }
+
     func testPaginatorSplitsLongText() {
         let text = String(repeating: "这是一段用于分页测试的中文句子。\n", count: 80)
         let pages = PagePaginator.paginate(

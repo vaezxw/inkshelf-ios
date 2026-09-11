@@ -36,10 +36,11 @@ enum BookFileStore {
 
     static func readContentSlice(bookId: String, start: Int, length: Int) throws -> String {
         let full = try readContent(bookId: bookId)
-        guard start >= 0, length >= 0, start <= full.count else { return "" }
-        let s = full.index(full.startIndex, offsetBy: start)
-        let e = full.index(s, offsetBy: min(length, full.count - start))
-        return String(full[s..<e])
+        let ns = full as NSString
+        let safeStart = min(max(start, 0), ns.length)
+        let safeLen = min(max(length, 0), ns.length - safeStart)
+        guard safeLen > 0 else { return "" }
+        return ns.substring(with: NSRange(location: safeStart, length: safeLen))
     }
 
     static func writeCache(bookId: String, chapterIndex: Int, text: String) throws {
