@@ -267,23 +267,28 @@ struct SourcesView: View {
         var collected: [SearchBookHit] = []
         let batchSize = 6
         var done = 0
+        var skippedJS = 0
+        var failed = 0
         for start in stride(from: 0, to: jobs.count, by: batchSize) {
             if Task.isCancelled { break }
             let batch = Array(jobs[start..<min(start + batchSize, jobs.count)])
-            await withTaskGroup(of: [SearchBookHit].self) { group in
+            await withTaskGroup(of: (hits: [SearchBookHit], skippedJS: Bool, failed: Bool).self) { group in
                 for job in batch {
                     group.addTask {
-                        if Task.isCancelled { return [] }
-                        if SourceEngine.isUnsupportedSearchJSON(job.legadoRaw) { return [] }
+                        if Task.isCancelled { return ([], false, false) }
+                        if SourceEngine.isUnsupportedSearchJSON(job.legadoRaw) {
+                            return ([], true, false)
+                        }
                         do {
-                            return try await SourceEngine.search(
+                            let hits = try await SourceEngine.search(
                                 rawSourceJSON: job.legadoRaw,
                                 sourceId: job.id,
                                 sourceName: job.name,
                                 keyword: key
                             )
+                            return (hits, false, false)
                         } catch {
-                            return []
+                            return ([], false, true)
                         }
                     }
                 }
@@ -292,7 +297,9 @@ struct SourcesView: View {
                         group.cancelAll()
                         break
                     }
-                    collected.append(contentsOf: part)
+                    if part.skippedJS { skippedJS += 1 }
+                    if part.failed { failed += 1 }
+                    collected.append(contentsOf: part.hits)
                 }
             }
             if Task.isCancelled { break }
@@ -306,7 +313,19 @@ struct SourcesView: View {
             hits = collected
             return
         }
-        progressText = collected.isEmpty ? "无结果（部分书源含 JS 已跳过）" : "完成 · \(collected.count) 条"
+        if collected.isEmpty {
+            var hint = "无结果"
+            var parts: [String] = []
+            if failed > 0 { parts.append("失败 \(failed)") }
+            if skippedJS > 0 { parts.append("含 JS 跳过 \(skippedJS)") }
+            if !parts.isEmpty {
+                hint += "（" + parts.joined(separator: "，") + "）"
+            }
+            progressText = hint
+        } else {
+            progressText = "完成 · \(collected.count) 条"
+        }
+        hits = collected
     }
 
     private func exportSources() {

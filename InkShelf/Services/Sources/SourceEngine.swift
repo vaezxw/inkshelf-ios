@@ -37,6 +37,25 @@ struct SearchRequestSpec {
 }
 
 enum SourceEngine {
+    private final class SessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            // Don't auto-follow POST redirects: URLSession would turn them into GET and drop the body.
+            let method = (task.originalRequest?.httpMethod ?? task.currentRequest?.httpMethod ?? "GET").uppercased()
+            if method == "POST" {
+                completionHandler(nil)
+                return
+            }
+            completionHandler(request)
+        }
+    }
+
+    private static let sessionDelegate = SessionDelegate()
     private static let session: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 12
@@ -46,7 +65,7 @@ enum SourceEngine {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         ]
-        return URLSession(configuration: cfg)
+        return URLSession(configuration: cfg, delegate: sessionDelegate, delegateQueue: nil)
     }()
 
     /// Parse Legado JSON on the calling isolation; returns a value-typed map used only locally.
@@ -346,11 +365,22 @@ enum SourceEngine {
         try await requestBody(spec: SearchRequestSpec(url: url, method: "GET", body: nil, headers: [:]), headerJson: headerJson)
     }
 
+    private static let blockedHeaderKeys: Set<String> = [
+        "host", "connection", "content-length", "transfer-encoding", "accept-encoding",
+    ]
+
+    private static func sanitizeHeaders(_ input: [String: String]) -> [String: String] {
+        var out: [String: String] = [:]
+        for (key, value) in input {
+            if blockedHeaderKeys.contains(key.lowercased()) { continue }
+            out[key] = value
+        }
+        return out
+    }
+
     private static func requestBody(spec: SearchRequestSpec, headerJson: Any?) async throws -> String {
-        guard let url = URL(string: spec.url) else { throw SourceError.network("无效 URL") }
-        var req = URLRequest(url: url)
-        req.httpMethod = spec.method
-        var headers = spec.headers
+        guard var url = URL(string: spec.url) else { throw SourceError.network("无效 URL") }
+        var headers = sanitizeHeaders(spec.headers)
         if let headerJson {
             if let s = headerJson as? String, let data = s.data(using: .utf8),
                let map = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -359,25 +389,48 @@ enum SourceEngine {
                 map.forEach { headers[$0.key] = "\($0.value)" }
             }
         }
-        if headers["Referer"] == nil, let scheme = url.scheme, let host = url.host {
-            headers["Referer"] = "\(scheme)://\(host)/"
-        }
+        headers = sanitizeHeaders(headers)
         if headers["User-Agent"] == nil {
             headers["User-Agent"] = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
         }
-        headers.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
-        if spec.method == "POST" {
-            req.httpBody = spec.body?.data(using: .utf8)
-            if req.value(forHTTPHeaderField: "Content-Type") == nil {
-                req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+
+        var method = spec.method.uppercased() == "POST" ? "POST" : "GET"
+        var bodyData = method == "POST" ? spec.body?.data(using: .utf8) : nil
+        var hops = 0
+        while true {
+            if headers["Referer"] == nil, let scheme = url.scheme, let host = url.host {
+                headers["Referer"] = "\(scheme)://\(host)/"
             }
+            var req = URLRequest(url: url)
+            req.httpMethod = method
+            headers.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
+            if method == "POST" {
+                req.httpBody = bodyData
+                if req.value(forHTTPHeaderField: "Content-Type") == nil {
+                    req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                }
+            }
+            let (data, response) = try await session.data(for: req)
+            guard let http = response as? HTTPURLResponse else {
+                throw SourceError.network("无效响应")
+            }
+            if (300..<400).contains(http.statusCode),
+               let location = http.value(forHTTPHeaderField: "Location"),
+               let next = URL(string: location, relativeTo: url)?.absoluteURL,
+               hops < 5 {
+                hops += 1
+                // Keep POST body across novel-site domain hops (xs52 → wx52 etc).
+                url = next
+                headers.removeValue(forKey: "Host")
+                headers.removeValue(forKey: "Referer")
+                continue
+            }
+            guard (200..<400).contains(http.statusCode) else {
+                throw SourceError.network("HTTP \(http.statusCode)")
+            }
+            if data.isEmpty { throw SourceError.network("服务器返回空内容") }
+            return NovelTextDecoder.decode(data)
         }
-        let (data, response) = try await session.data(for: req)
-        if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
-            throw SourceError.network("HTTP \(http.statusCode)")
-        }
-        if data.isEmpty { throw SourceError.network("服务器返回空内容") }
-        return NovelTextDecoder.decode(data)
     }
 
     static func absURL(base: String, maybe: String?) -> String? {

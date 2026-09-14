@@ -172,7 +172,10 @@ enum PlistSourceConverter {
             let loc = str(item["postLocation"]).lowercased()
             let value = str(item["postValue"]).replacingOccurrences(of: "@@@", with: "{{key}}")
             if loc == "header" {
-                if rawKey.lowercased() == "accept-encoding" { continue }
+                let lowered = rawKey.lowercased()
+                if lowered == "accept-encoding" || lowered == "host" || lowered == "connection" || lowered == "content-length" {
+                    continue
+                }
                 headers[rawKey] = value
             } else if loc == "body" {
                 var key = rawKey
