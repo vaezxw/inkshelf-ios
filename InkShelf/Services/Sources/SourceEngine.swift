@@ -113,7 +113,7 @@ enum SourceEngine {
                 .replacingOccurrences(of: "{{page}}", with: "\(page)")
         }
         tpl = replaceVars(tpl)
-        let abs = absURL(base: base, maybe: tpl) ?? tpl
+        let abs = rewriteMigratedHost(absURL(base: base, maybe: tpl) ?? tpl)
         let method = "\(options["method"] ?? "GET")".uppercased()
         var headers: [String: String] = [:]
         if let rawHeaders = options["headers"] as? String,
@@ -133,6 +133,23 @@ enum SourceEngine {
             body: body,
             headers: headers
         )
+    }
+
+    /// Old novel mirrors often move domains; hit the live host before the first request.
+    private static func rewriteMigratedHost(_ urlString: String) -> String {
+        guard var comps = URLComponents(string: urlString), let host = comps.host?.lowercased() else {
+            return urlString
+        }
+        let aliases: [String: String] = [
+            "www.xs52.info": "www.wx52.info",
+            "xs52.info": "www.wx52.info",
+            "www.xs52.la": "www.wx52.info",
+            "xs52.la": "www.wx52.info",
+        ]
+        guard let mapped = aliases[host] else { return urlString }
+        comps.host = mapped
+        if comps.scheme == nil { comps.scheme = "http" }
+        return comps.string ?? urlString
     }
 
     static func search(rawSourceJSON: String, sourceId: String, sourceName: String, keyword: String, page: Int = 1) async throws -> [SearchBookHit] {
@@ -379,7 +396,7 @@ enum SourceEngine {
     }
 
     private static func requestBody(spec: SearchRequestSpec, headerJson: Any?) async throws -> String {
-        guard var url = URL(string: spec.url) else { throw SourceError.network("无效 URL") }
+        guard var url = URL(string: rewriteMigratedHost(spec.url)) else { throw SourceError.network("无效 URL") }
         var headers = sanitizeHeaders(spec.headers)
         if let headerJson {
             if let s = headerJson as? String, let data = s.data(using: .utf8),

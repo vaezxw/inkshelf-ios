@@ -73,6 +73,7 @@ enum PlistSourceConverter {
         let name = str(server["serverName"]).isEmpty ? "未命名书源" : str(server["serverName"])
         var host = str(server["serverHostURL"])
         if host.hasSuffix("/") { host = String(host.dropLast()) }
+        host = migrateHostString(host)
         guard !host.isEmpty else { throw SourceError.format("书源「\(name)」缺少 serverHostURL") }
 
         let search = server["searchBook"] as? [String: Any] ?? [:]
@@ -162,6 +163,7 @@ enum PlistSourceConverter {
         guard !url.isEmpty else {
             throw SourceError.format("书源「\(sourceName)」缺少 searchFirstPageUrl")
         }
+        url = migrateHostString(url)
         let type = str(search["searchPageRequestType"])
         let posts = search["searchPostValueAndKey"] as? [[String: Any]] ?? []
         var headers: [String: String] = [:]
@@ -337,6 +339,14 @@ enum PlistSourceConverter {
             return "\(s[tagR]):nth-of-type(\(s[nR]))"
         }
         return s
+    }
+
+    private static func migrateHostString(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "www.xs52.info", with: "www.wx52.info")
+            .replacingOccurrences(of: "://xs52.info", with: "://www.wx52.info")
+            .replacingOccurrences(of: "www.xs52.la", with: "www.wx52.info")
+            .replacingOccurrences(of: "://xs52.la", with: "://www.wx52.info")
     }
 
     private static func str(_ any: Any?) -> String {
